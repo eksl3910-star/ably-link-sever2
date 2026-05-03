@@ -4,6 +4,7 @@ import {
   findUserByNickname,
   insertUser,
   isClientIdBlocked,
+  isNewRegistrationBlockedForClient,
   normalizeNickname,
   validateNicknameRules,
 } from "@/lib/database";
@@ -51,6 +52,16 @@ export async function POST(req: Request) {
     if (clientId && (await isClientIdBlocked(clientId))) {
       return NextResponse.json(
         { error: "이 기기에서는 새 계정을 만들 수 없습니다." },
+        { status: 403 }
+      );
+    }
+
+    if (clientId && (await isNewRegistrationBlockedForClient(clientId))) {
+      return NextResponse.json(
+        {
+          error:
+            "이 기기에서 신고 누적이 있는 계정과 연결되어 있어 새 계정을 만들 수 없습니다.",
+        },
         { status: 403 }
       );
     }

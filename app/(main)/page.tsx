@@ -234,9 +234,11 @@ function ContactModal({ onClose }: { onClose: () => void }) {
 function GuidePopup({
   onClose,
   onRequestWithdraw,
+  hideWithdraw,
 }: {
   onClose: () => void;
   onRequestWithdraw: () => void;
+  hideWithdraw?: boolean;
 }) {
   const handleDontShow = () => {
     localStorage.setItem("als_guide_done", "1");
@@ -311,26 +313,32 @@ function GuidePopup({
           ))}
         </div>
 
-        <div className="mt-6 border-t border-[#f0f0f0] pt-5">
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              onRequestWithdraw();
-            }}
-            className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium text-[#767676] transition-all duration-200 hover:bg-red-50 hover:text-red-600"
-          >
-            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path
-                d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-              />
-            </svg>
-            계정 탈퇴하기
-          </button>
-        </div>
+        {!hideWithdraw ? (
+          <div className="mt-6 border-t border-[#f0f0f0] pt-5">
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onRequestWithdraw();
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-medium text-[#767676] transition-all duration-200 hover:bg-red-50 hover:text-red-600"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+              계정 탈퇴하기
+            </button>
+          </div>
+        ) : (
+          <p className="mt-6 rounded-xl border border-amber-100 bg-amber-50/80 px-4 py-3 text-center text-xs leading-relaxed text-amber-900">
+            신고 누적으로 계정 탈퇴를 진행할 수 없습니다.
+          </p>
+        )}
 
         <button
           type="button"
@@ -513,6 +521,8 @@ export default function HomePage() {
   const [showContact, setShowContact] = useState(false);
   const [layoutPref, setLayoutPref] = useState<LayoutPref>("auto");
   const [mediaDesktop, setMediaDesktop] = useState(false);
+  /** 신고 3회 이상·영구 정지: 서버가 로그아웃/탈퇴를 거부; UI에서도 막음(쿠키 삭제는 막을 수 없음) */
+  const [accountControlsLocked, setAccountControlsLocked] = useState(false);
   /** 신고 누적 알림 — 숫자가 있으면 해당 횟수로 팝업 표시 */
   const [reportNoticeCount, setReportNoticeCount] = useState<number | null>(null);
 
@@ -538,7 +548,11 @@ export default function HomePage() {
 
       try {
         const r = await fetch("/api/auth/me");
-        const d = (await r.json()) as { ok?: boolean; user?: User };
+        const d = (await r.json()) as {
+          ok?: boolean;
+          user?: User;
+          accountControlsLocked?: boolean;
+        };
         if (cancelled) return;
         if (r.status === 503) {
           router.replace("/maintenance");
@@ -547,6 +561,7 @@ export default function HomePage() {
         }
         if (d.ok && d.user) {
           setUser(d.user);
+          setAccountControlsLocked(Boolean(d.accountControlsLocked));
           try {
             const lr = await fetch("/api/user/link");
             const lj = (await lr.json()) as { ok?: boolean; needsDailyRegistration?: boolean };
@@ -626,11 +641,24 @@ export default function HomePage() {
     }
   }, [user?.id]);
 
+  const refreshAccountFlags = useCallback(async () => {
+    try {
+      const r = await fetch("/api/auth/me");
+      const d = (await r.json()) as { ok?: boolean; accountControlsLocked?: boolean };
+      if (d.ok && typeof d.accountControlsLocked === "boolean") {
+        setAccountControlsLocked(d.accountControlsLocked);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const refreshDashboard = useCallback(() => {
     void loadWaitlistStats();
     loadAnnouncements();
     void checkReportNotice();
-  }, [loadWaitlistStats, loadAnnouncements, checkReportNotice]);
+    void refreshAccountFlags();
+  }, [loadWaitlistStats, loadAnnouncements, checkReportNotice, refreshAccountFlags]);
 
   async function handleRefreshWaitlistCount() {
     if (waitlistCountRefreshing) return;
@@ -746,7 +774,15 @@ export default function HomePage() {
   // ── Logout ──────────────────────────────────────────────────────────────────
 
   async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST" });
+    const res = await fetch("/api/auth/logout", { method: "POST" });
+    const j = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (res.status === 403 || j.ok === false) {
+      setReceiveAlert({
+        message: j.error ?? "지금은 로그아웃할 수 없습니다.",
+        type: "warning",
+      });
+      return;
+    }
     router.push("/welcome");
   }
 
@@ -955,23 +991,25 @@ export default function HomePage() {
               >
                 MY
               </button>
-              <button
-                type="button"
-                onClick={() => void handleLogout()}
-                className="flex h-10 w-10 items-center justify-center rounded-xl text-[#767676] transition-all duration-200 hover:bg-[#fff0f0] hover:text-[#1a1a1a] active:scale-95"
-                title="로그아웃"
-                aria-label="로그아웃"
-              >
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path
-                    d="M15 3h4a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
+              {!accountControlsLocked ? (
+                <button
+                  type="button"
+                  onClick={() => void handleLogout()}
+                  className="flex h-10 w-10 items-center justify-center rounded-xl text-[#767676] transition-all duration-200 hover:bg-[#fff0f0] hover:text-[#1a1a1a] active:scale-95"
+                  title="로그아웃"
+                  aria-label="로그아웃"
+                >
+                  <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <path
+                      d="M15 3h4a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              ) : null}
             </div>
           </header>
 
@@ -1192,6 +1230,7 @@ export default function HomePage() {
         <GuidePopup
           onClose={() => setShowGuide(false)}
           onRequestWithdraw={() => setShowWithdrawModal(true)}
+          hideWithdraw={accountControlsLocked}
         />
       ) : null}
       {showWithdrawModal ? (

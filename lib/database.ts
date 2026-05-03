@@ -908,6 +908,49 @@ export async function countReportsAgainstUser(targetUserId: string): Promise<num
   return row?.c ?? 0;
 }
 
+/**
+ * 신고 3회 이상 누적·영구 정지: 자발적 로그아웃·탈퇴를 막을 때 사용.
+ * (쿠키/로컬스토리지 삭제는 막을 수 없음)
+ */
+export async function isAccountControlsLocked(userId: string): Promise<boolean> {
+  const db = getDb();
+  const row = await db
+    .prepare(`SELECT COALESCE(account_status, 'active') AS st FROM users WHERE id = ?`)
+    .bind(userId)
+    .first<{ st: string }>();
+  if (!row) return true;
+  if (row.st === "permanent_ban") return true;
+  const n = await countReportsAgainstUser(userId);
+  return n >= 3;
+}
+
+/**
+ * 이 브라우저 클라이언트 ID에 묶인 계정 중 신고 3회 이상(또는 영구 정지)인 계정이 있으면
+ * 같은 기기에서 추가 회원가입을 막음.
+ */
+export async function isNewRegistrationBlockedForClient(clientId: string): Promise<boolean> {
+  const trimmed = clientId.trim().toLowerCase();
+  if (!/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(trimmed)) {
+    return false;
+  }
+  const db = getDb();
+  const row = await db
+    .prepare(
+      `SELECT 1 AS x
+       FROM user_client_bindings b
+       JOIN users u ON u.id = b.user_id
+       WHERE b.client_id = ?
+         AND (
+           COALESCE(u.account_status, 'active') = 'permanent_ban'
+           OR (SELECT COUNT(*) FROM reports r WHERE r.target_id = u.id) >= 3
+         )
+       LIMIT 1`
+    )
+    .bind(trimmed)
+    .first<{ x: number }>();
+  return row != null;
+}
+
 export async function createReport(
   reporterId: string,
   targetId: string,
