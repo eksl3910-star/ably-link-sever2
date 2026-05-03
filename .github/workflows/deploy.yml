@@ -18,11 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # package.json 의 packageManager(pnpm) 때문에 setup-node v5 가 기본으로 pnpm 캐시를
+      # 켜며, 이 시점에는 pnpm 이 없어 실패함 → 자동 캐시만 끔 (Corepack 이후에 pnpm 생김)
       - uses: actions/setup-node@v5
         with:
           node-version-file: ".nvmrc"
+          package-manager-cache: false
 
-      # pnpm/action-setup(Node 20 경고) 대신 Node 번들 Corepack — bash 필요 없음
+      # Node 번들 Corepack으로 pnpm 활성화 (pnpm/action-setup 의 Node 20 경고 회피)
       - name: Enable pnpm (Corepack)
         run: |
           corepack enable
