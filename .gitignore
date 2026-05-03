@@ -1,0 +1,8 @@
+.next/
+node_modules/
+.wrangler/
+.vercel/
+*.log
+.env
+.env.local
+.env.production

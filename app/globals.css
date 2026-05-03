@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+:root {
+  --brand: #ff5a5f;
+  --brand-light: #fff0f0;
+  --brand-dark: #e04448;
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b7280;
+  --border: #e5e7eb;
+  --bg-page: #f5f5f7;
+  --bg-card: #ffffff;
+}
+
+@keyframes als-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes als-modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes als-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.als-enter {
+  animation: als-fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.als-modal-enter {
+  animation: als-modal-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.als-backdrop-enter {
+  animation: als-backdrop-in 0.22s ease-out both;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  min-height: 100%;
+}

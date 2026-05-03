@@ -1,0 +1,20 @@
+﻿# Cloudflare Pages — 이 저장소(abiy-link-sever2) 전용 설정
+# 원본(ably-link-server)과 같은 D1 database_id를 절대 넣지 마세요.
+# 새 D1 생성: npx wrangler d1 create ably-link-sever2-db
+# 생성 후 반환된 UUID를 아래 database_id에만 넣습니다.
+#
+# --- Cloudflare Pages 대시보드 Git 연동 시 ---
+# Build command:        npm run pages:build
+# 출력 디렉터리 / Build output directory:  .vercel/output/static
+# Root directory: / (모노레포가 아니면 비움)
+# 환경 변수:      NODE_VERSION = 20  (또는 이 저장소의 .nvmrc와 맞출 것)
+# 로컬 Windows에서 @cloudflare/next-on-pages는 내부적으로 bash가 필요합니다.
+# Git/CI 빌드는 Linux 이미지라 추가 설정 없이 동작합니다.
+name = "ably-link-sever2"
+pages_build_output_dir = ".vercel/output/static"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ably-link-sever2-db"
+database_id = "181c7d3f-6a3f-44b2-9105-d6ca09f3999d"
+

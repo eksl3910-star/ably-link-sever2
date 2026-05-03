@@ -1,0 +1,1013 @@
+import { getRequestContext, getOptionalRequestContext } from "@cloudflare/next-on-pages";
+import { SESSION_TTL_MS, CLAIM_WINDOW_MS } from "@/lib/constants";
+import { parseAndValidateAblyUrl } from "@/lib/ably-link";
+import { getKstDayStartMs } from "@/lib/kst";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export type User = {
+  id: string;
+  nickname: string;
+  joinedAt: number;
+};
+
+export type SessionRow = {
+  id: string;
+  userId: string;
+  validUntil: number;
+};
+
+export type LinkState = "queued" | "claimed" | "consumed";
+
+export type LinkRow = {
+  id: string;
+  url: string;
+  ownerId: string;
+  state: LinkState;
+  queuePos: number;
+  createdAt: number;
+  updatedAt: number;
+  takerId: string | null;
+  claimDeadline: number | null;
+  claimedAt: number | null;
+  consumedAt: number | null;
+};
+
+export type AdminMetrics = {
+  totalUsers: number;
+  newUsersToday: number;
+  totalLinks: number;
+  queuedLinks: number;
+  consumedLinks: number;
+};
+
+// ── DB access ─────────────────────────────────────────────────────────────────
+
+type D1Env = { DB?: D1Database };
+
+/** D1Database는 보통 prepare + exec 를 가짐 (다른 CF 바인딩과 구분) */
+function isD1Database(v: unknown): v is D1Database {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as { prepare?: unknown; exec?: unknown };
+  return typeof o.prepare === "function" && typeof o.exec === "function";
+}
+
+/** 허용된 바인딩 이름만 조회 (임의 auto-scan 금지) */
+function pickD1FromEnv(env: unknown): D1Database | undefined {
+  if (!env || typeof env !== "object") return undefined;
+  const record = env as Record<string, unknown>;
+  const candidates = ["DB", "D1_DB", "DATABASE", "D1"];
+  for (const key of candidates) {
+    const value = record[key];
+    if (isD1Database(value)) return value;
+  }
+  return undefined;
+}
+
+export function getDb(): D1Database {
+  let env: unknown;
+  try {
+    env = getRequestContext().env;
+  } catch {
+    env = undefined;
+  }
+
+  let db = pickD1FromEnv(env);
+  if (!db) {
+    const g = globalThis as unknown as { DB?: unknown };
+    if (isD1Database(g.DB)) db = g.DB;
+  }
+
+  if (!db) {
+    throw new Error(
+      "D1 binding을 찾지 못했거나 잘못된 바인딩을 참조했습니다. Cloudflare에서 이 프로젝트 전용 D1을 만들고, Functions → D1 bindings 에 이름 `DB`로 연결한 뒤 재배포하세요. (다른 저장소와 같은 database_id를 쓰지 마세요.)"
+    );
+  }
+  return db;
+}
+
+/** 기존 DB는 `email`, 신규 스키마는 `nickname` — 둘 다 지원 */
+type UsersLoginCol = "nickname" | "email";
+let cachedUsersLoginCol: UsersLoginCol | undefined;
+
+export async function getUsersLoginColumn(db: D1Database): Promise<UsersLoginCol> {
+  if (cachedUsersLoginCol) return cachedUsersLoginCol;
+  const res = await db.prepare("PRAGMA table_info(users)").all<{ name: string }>();
+  const names = new Set((res.results ?? []).map((r) => r.name));
+  if (names.has("nickname")) cachedUsersLoginCol = "nickname";
+  else if (names.has("email")) cachedUsersLoginCol = "email";
+  else {
+    throw new Error("users 테이블에 nickname 또는 email 컬럼이 없습니다. 마이그레이션을 확인하세요.");
+  }
+  return cachedUsersLoginCol;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** 영문 대문자만 소문자로 통일 (한글·숫자는 그대로). */
+export function normalizeNickname(raw: string): string {
+  return raw.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/** 특수문자 제외: 영어, 한글(음절·자모), 숫자만 허용. */
+const NICKNAME_CHARS = /^[a-z0-9\uAC00-\uD7A3\u3131-\u318E]+$/;
+
+export function validateNicknameRules(normalized: string): string | null {
+  if (normalized.length < 2) return "닉네임은 2자 이상이어야 합니다.";
+  if (normalized.length > 20) return "닉네임은 20자 이하여야 합니다.";
+  if (!NICKNAME_CHARS.test(normalized)) {
+    return "닉네임은 영어, 한글, 숫자만 사용할 수 있습니다.";
+  }
+  return null;
+}
+
+// ── User ──────────────────────────────────────────────────────────────────────
+
+export async function insertUser(
+  nickname: string,
+  pwHash: string,
+  pwSalt: string
+): Promise<User> {
+  const db = getDb();
+  const col = await getUsersLoginColumn(db);
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  const normalized = normalizeNickname(nickname);
+
+  await db
+    .prepare(
+      `INSERT INTO users (id, ${col}, pw_hash, pw_salt, joined_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .bind(id, normalized, pwHash, pwSalt, now)
+    .run();
+
+  return { id, nickname: normalized, joinedAt: now };
+}
+
+export async function findUserByNickname(nickname: string): Promise<
+  | (User & { pwHash: string; pwSalt: string })
+  | null
+> {
+  const db = getDb();
+  const col = await getUsersLoginColumn(db);
+  const normalized = normalizeNickname(nickname);
+  if (!normalized) return null;
+  return db
+    .prepare(
+      `SELECT id, ${col} AS nickname, pw_hash AS pwHash, pw_salt AS pwSalt, joined_at AS joinedAt
+       FROM users WHERE ${col} = ?`
+    )
+    .bind(normalized)
+    .first<User & { pwHash: string; pwSalt: string }>();
+}
+
+export async function findUserById(userId: string): Promise<User | null> {
+  const db = getDb();
+  if (!userId) return null;
+  const col = await getUsersLoginColumn(db);
+  return db
+    .prepare(`SELECT id, ${col} AS nickname, joined_at AS joinedAt FROM users WHERE id = ?`)
+    .bind(userId)
+    .first<User>();
+}
+
+export async function removeUserAndData(userId: string): Promise<void> {
+  const db = getDb();
+  await db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(userId).run();
+  await db.prepare(`DELETE FROM reports WHERE reporter_id = ? OR target_id = ?`).bind(userId, userId).run();
+  await db
+    .prepare(`DELETE FROM transactions WHERE user_a_id = ? OR user_b_id = ?`)
+    .bind(userId, userId)
+    .run();
+  await db.prepare(`DELETE FROM receipts  WHERE taker_id = ?`).bind(userId).run();
+  await db
+    .prepare(`DELETE FROM receipts WHERE link_id IN (SELECT id FROM links WHERE owner_id = ?)`)
+    .bind(userId)
+    .run();
+  await db.prepare(`DELETE FROM links     WHERE owner_id = ?`).bind(userId).run();
+  await db.prepare(`DELETE FROM users     WHERE id = ?`).bind(userId).run();
+}
+
+// ── Session ───────────────────────────────────────────────────────────────────
+
+export async function createSession(
+  userId: string,
+  ttlMs: number = SESSION_TTL_MS
+): Promise<{ id: string; validUntil: number }> {
+  const db = getDb();
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  const validUntil = now + ttlMs;
+
+  await db
+    .prepare(
+      `INSERT INTO sessions (id, user_id, valid_until, created_at)
+       VALUES (?, ?, ?, ?)`
+    )
+    .bind(id, userId, validUntil, now)
+    .run();
+
+  return { id, validUntil };
+}
+
+export async function lookupSession(
+  sessionId: string
+): Promise<SessionRow | null> {
+  const db = getDb();
+  const now = Date.now();
+  if (!sessionId) return null;
+
+  const row = await db
+    .prepare(
+      `SELECT id, user_id AS userId, valid_until AS validUntil
+       FROM sessions WHERE id = ?`
+    )
+    .bind(sessionId)
+    .first<SessionRow>();
+
+  if (!row) return null;
+
+  if (row.validUntil <= now) {
+    await db.prepare(`DELETE FROM sessions WHERE id = ?`).bind(sessionId).run();
+    return null;
+  }
+
+  return row;
+}
+
+export async function destroySession(sessionId: string): Promise<void> {
+  const db = getDb();
+  if (!sessionId) return;
+  await db.prepare(`DELETE FROM sessions WHERE id = ?`).bind(sessionId).run();
+}
+
+// ── Settings / Maintenance ────────────────────────────────────────────────────
+
+const MAX_MAINTENANCE_MESSAGE_LEN = 2000;
+
+export async function getSettings(): Promise<{
+  maintenanceOn: boolean;
+  touchedAt: number;
+  maintenanceMessage: string;
+}> {
+  const db = getDb();
+  try {
+    const row = await db
+      .prepare(
+        `SELECT maintenance_on AS maintenanceOn,
+                touched_at AS touchedAt,
+                IFNULL(maintenance_message, '') AS maintenanceMessage
+         FROM settings WHERE key = 'global'`
+      )
+      .first<{ maintenanceOn: number; touchedAt: number; maintenanceMessage: string }>();
+
+    return {
+      maintenanceOn: Boolean(row?.maintenanceOn ?? 0),
+      touchedAt: row?.touchedAt ?? 0,
+      maintenanceMessage: row?.maintenanceMessage ?? "",
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const missingCol =
+      /no such column/i.test(msg) ||
+      /maintenance_message/i.test(msg) ||
+      /does not exist/i.test(msg);
+    if (!missingCol) throw err;
+
+    const row = await db
+      .prepare(
+        `SELECT maintenance_on AS maintenanceOn, touched_at AS touchedAt
+         FROM settings WHERE key = 'global'`
+      )
+      .first<{ maintenanceOn: number; touchedAt: number }>();
+
+    return {
+      maintenanceOn: Boolean(row?.maintenanceOn ?? 0),
+      touchedAt: row?.touchedAt ?? 0,
+      maintenanceMessage: "",
+    };
+  }
+}
+
+/** 미들웨어 등: Worker 컨텍스트가 없으면 false (로컬 등). */
+export async function getMaintenanceOnSafe(): Promise<boolean> {
+  try {
+    const ctx = getOptionalRequestContext();
+    const db = ctx?.env ? pickD1FromEnv(ctx.env) : undefined;
+    if (!db) return false;
+    const row = await db
+      .prepare(
+        `SELECT maintenance_on AS maintenanceOn FROM settings WHERE key = 'global'`
+      )
+      .first<{ maintenanceOn: number }>();
+    return Boolean(row?.maintenanceOn ?? 0);
+  } catch {
+    return false;
+  }
+}
+
+export async function setMaintenance(
+  on: boolean
+): Promise<{ maintenanceOn: boolean; touchedAt: number }> {
+  const db = getDb();
+  const now = Date.now();
+  await db
+    .prepare(
+      `UPDATE settings SET maintenance_on = ?, touched_at = ? WHERE key = 'global'`
+    )
+    .bind(on ? 1 : 0, now)
+    .run();
+  return { maintenanceOn: on, touchedAt: now };
+}
+
+export function clampMaintenanceMessage(raw: string): string {
+  const t = raw.replace(/\u0000/g, "").trimEnd();
+  if (t.length <= MAX_MAINTENANCE_MESSAGE_LEN) return t;
+  return t.slice(0, MAX_MAINTENANCE_MESSAGE_LEN);
+}
+
+export async function updateMaintenanceMessage(message: string): Promise<void> {
+  const db = getDb();
+  const now = Date.now();
+  const text = clampMaintenanceMessage(message);
+  try {
+    await db
+      .prepare(
+        `UPDATE settings SET maintenance_message = ?, touched_at = ? WHERE key = 'global'`
+      )
+      .bind(text, now)
+      .run();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const missingCol =
+      /no such column/i.test(msg) ||
+      /maintenance_message/i.test(msg) ||
+      /does not exist/i.test(msg);
+    if (missingCol) {
+      throw new Error(
+        "D1에 migrations/0003_settings_maintenance_message.sql 을 한 번 실행해 주세요. (settings.maintenance_message 컬럼)"
+      );
+    }
+    throw err;
+  }
+}
+
+// ── Announcements ─────────────────────────────────────────────────────────────
+
+const MAX_ANNOUNCEMENT_TITLE_LEN = 200;
+const MAX_ANNOUNCEMENT_BODY_LEN = 10_000;
+
+export type AnnouncementRow = {
+  id: string;
+  title: string;
+  body: string;
+  createdAt: number;
+};
+
+export function clampAnnouncementTitle(raw: string): string {
+  const t = raw.replace(/\u0000/g, "").trim();
+  if (t.length <= MAX_ANNOUNCEMENT_TITLE_LEN) return t;
+  return t.slice(0, MAX_ANNOUNCEMENT_TITLE_LEN);
+}
+
+export function clampAnnouncementBody(raw: string): string {
+  const t = raw.replace(/\u0000/g, "").trimEnd();
+  if (t.length <= MAX_ANNOUNCEMENT_BODY_LEN) return t;
+  return t.slice(0, MAX_ANNOUNCEMENT_BODY_LEN);
+}
+
+export async function listAnnouncements(limit = 100): Promise<AnnouncementRow[]> {
+  const db = getDb();
+  const lim = Math.min(Math.max(1, limit), 200);
+  const res = await db
+    .prepare(
+      `SELECT id, title, body, created_at AS createdAt
+       FROM announcements
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .bind(lim)
+    .all<AnnouncementRow>();
+  return res.results ?? [];
+}
+
+export async function createAnnouncement(
+  title: string,
+  body: string
+): Promise<AnnouncementRow> {
+  const t = clampAnnouncementTitle(title);
+  const b = clampAnnouncementBody(body);
+  if (!t.trim()) throw new Error("공지 제목을 입력해주세요.");
+  if (!b.trim()) throw new Error("공지 내용을 입력해주세요.");
+
+  const db = getDb();
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  await db
+    .prepare(
+      `INSERT INTO announcements (id, title, body, created_at)
+       VALUES (?, ?, ?, ?)`
+    )
+    .bind(id, t.trim(), b, now)
+    .run();
+
+  return { id, title: t.trim(), body: b, createdAt: now };
+}
+
+export async function updateAnnouncement(
+  id: string,
+  title: string,
+  body: string
+): Promise<{ ok: boolean }> {
+  const t = clampAnnouncementTitle(title);
+  const b = clampAnnouncementBody(body);
+  if (!t.trim()) throw new Error("공지 제목을 입력해주세요.");
+  if (!b.trim()) throw new Error("공지 내용을 입력해주세요.");
+
+  const db = getDb();
+  const res = await db
+    .prepare(`UPDATE announcements SET title = ?, body = ? WHERE id = ?`)
+    .bind(t.trim(), b, id)
+    .run();
+  return { ok: res.meta.changes === 1 };
+}
+
+export async function deleteAnnouncement(id: string): Promise<{ ok: boolean }> {
+  const db = getDb();
+  const res = await db.prepare(`DELETE FROM announcements WHERE id = ?`).bind(id).run();
+  return { ok: res.meta.changes === 1 };
+}
+
+// ── Link helpers ──────────────────────────────────────────────────────────────
+
+export function parseAblyUrl(raw: string): string | null {
+  return parseAndValidateAblyUrl(raw);
+}
+
+async function purgeExpiredClaims(db: D1Database, nowMs: number): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE links
+       SET state = 'queued', taker_id = NULL,
+           claim_deadline = NULL, claimed_at = NULL, updated_at = ?
+       WHERE state = 'claimed'
+         AND claim_deadline IS NOT NULL
+         AND claim_deadline < ?`
+    )
+    .bind(nowMs, nowMs)
+    .run();
+}
+
+export async function isDuplicateLink(
+  ownerId: string,
+  url: string
+): Promise<boolean> {
+  const db = getDb();
+  const existing = await db
+    .prepare(
+      `SELECT id FROM links
+       WHERE url = ? AND owner_id = ? AND state IN ('queued', 'claimed')`
+    )
+    .bind(url, ownerId)
+    .first<{ id: string }>();
+  return existing !== null;
+}
+
+export async function enqueueLink(ownerId: string, url: string): Promise<{ id: string }> {
+  const db = getDb();
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await purgeExpiredClaims(db, now);
+  await db
+    .prepare(
+      `INSERT INTO links (id, url, owner_id, state, queue_pos, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?)`
+    )
+    .bind(id, url, ownerId, now, now, now)
+    .run();
+  return { id };
+}
+
+export async function prioritizeLink(
+  ownerId: string
+): Promise<{ ok: true; id: string } | { ok: false; reason: "NO_QUEUED_LINK" }> {
+  const db = getDb();
+  const now = Date.now();
+
+  const row = await db
+    .prepare(
+      `SELECT id FROM links
+       WHERE owner_id = ? AND state = 'queued'
+       ORDER BY queue_pos DESC
+       LIMIT 1`
+    )
+    .bind(ownerId)
+    .first<{ id: string }>();
+
+  if (!row) return { ok: false, reason: "NO_QUEUED_LINK" };
+
+  await db
+    .prepare(
+      `UPDATE links SET queue_pos = 0, updated_at = ?
+       WHERE id = ? AND owner_id = ? AND state = 'queued'`
+    )
+    .bind(now, row.id, ownerId)
+    .run();
+
+  return { ok: true, id: row.id };
+}
+
+export async function getLinkCounts(
+  userId: string
+): Promise<{ total: number; mine: number }> {
+  const db = getDb();
+  const now = Date.now();
+  await purgeExpiredClaims(db, now);
+
+  const total = await db
+    .prepare(`SELECT COUNT(*) AS c FROM links WHERE state = 'queued'`)
+    .first<{ c: number }>();
+
+  const mine = await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM links WHERE state = 'queued' AND owner_id = ?`
+    )
+    .bind(userId)
+    .first<{ c: number }>();
+
+  return { total: total?.c ?? 0, mine: mine?.c ?? 0 };
+}
+
+export async function getAdminMetrics(): Promise<AdminMetrics> {
+  const db = getDb();
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const startOfDay = now - (now % dayMs);
+
+  const totalUsers = await db
+    .prepare(`SELECT COUNT(*) AS c FROM users`)
+    .first<{ c: number }>();
+
+  const newUsersToday = await db
+    .prepare(`SELECT COUNT(*) AS c FROM users WHERE joined_at >= ?`)
+    .bind(startOfDay)
+    .first<{ c: number }>();
+
+  const totalLinks = await db
+    .prepare(`SELECT COUNT(*) AS c FROM links`)
+    .first<{ c: number }>();
+
+  const queuedLinks = await db
+    .prepare(`SELECT COUNT(*) AS c FROM links WHERE state = 'queued'`)
+    .first<{ c: number }>();
+
+  const consumedLinks = await db
+    .prepare(`SELECT COUNT(*) AS c FROM links WHERE state = 'consumed'`)
+    .first<{ c: number }>();
+
+  return {
+    totalUsers: totalUsers?.c ?? 0,
+    newUsersToday: newUsersToday?.c ?? 0,
+    totalLinks: totalLinks?.c ?? 0,
+    queuedLinks: queuedLinks?.c ?? 0,
+    consumedLinks: consumedLinks?.c ?? 0,
+  };
+}
+
+// ── User profile link / penalty ───────────────────────────────────────────────
+
+export type UserAccountRow = {
+  link: string | null;
+  lastLinkUpdate: number;
+  banUntil: number | null;
+  accountStatus: string;
+  penaltyCount: number;
+  banCount: number;
+};
+
+export async function getUserAccount(userId: string): Promise<UserAccountRow | null> {
+  const db = getDb();
+  const row = await db
+    .prepare(
+      `SELECT link AS link,
+              last_link_update AS lastLinkUpdate,
+              ban_until AS banUntil,
+              account_status AS accountStatus,
+              penalty_count AS penaltyCount,
+              ban_count AS banCount
+       FROM users WHERE id = ?`
+    )
+    .bind(userId)
+    .first<UserAccountRow>();
+  return row ?? null;
+}
+
+export async function updateUserProfileLink(userId: string, url: string): Promise<void> {
+  const db = getDb();
+  const now = Date.now();
+  await db
+    .prepare(`UPDATE users SET link = ?, last_link_update = ? WHERE id = ?`)
+    .bind(url, now, userId)
+    .run();
+}
+
+export function isUserBanned(account: UserAccountRow, nowMs: number): boolean {
+  if (account.accountStatus === "permanent_ban") return true;
+  if (account.banUntil != null && account.banUntil > nowMs) return true;
+  return false;
+}
+
+/** KST 자정 이후 아직 당일 링크 등록(또는 갱신)을 하지 않은 경우 */
+export function needsDailyLinkRegistration(lastLinkUpdate: number, nowMs: number): boolean {
+  const dayStart = getKstDayStartMs(nowMs);
+  return lastLinkUpdate < dayStart;
+}
+
+// ── Transactions (거래 창) ────────────────────────────────────────────────────
+
+export type TxRow = {
+  id: string;
+  linkId: string;
+  userAId: string;
+  userBId: string;
+  urlA: string;
+  urlB: string;
+  status: string;
+  aJoinedAt: number | null;
+  bJoinedAt: number | null;
+  aClickedAt: number | null;
+  bClickedAt: number | null;
+  createdAt: number;
+};
+
+export async function getTransactionById(id: string): Promise<TxRow | null> {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT id, link_id AS linkId, user_a_id AS userAId, user_b_id AS userBId,
+              url_a AS urlA, url_b AS urlB, status,
+              a_joined_at AS aJoinedAt, b_joined_at AS bJoinedAt,
+              a_clicked_at AS aClickedAt, b_clicked_at AS bClickedAt,
+              created_at AS createdAt
+       FROM transactions WHERE id = ?`
+    )
+    .bind(id)
+    .first<TxRow>();
+}
+
+export async function markTransactionPresence(txId: string, userId: string): Promise<void> {
+  const db = getDb();
+  const now = Date.now();
+  const row = await getTransactionById(txId);
+  if (!row) return;
+  if (row.userAId === userId) {
+    await db
+      .prepare(`UPDATE transactions SET a_joined_at = COALESCE(a_joined_at, ?) WHERE id = ?`)
+      .bind(now, txId)
+      .run();
+  } else if (row.userBId === userId) {
+    await db
+      .prepare(`UPDATE transactions SET b_joined_at = COALESCE(b_joined_at, ?) WHERE id = ?`)
+      .bind(now, txId)
+      .run();
+  }
+}
+
+export async function recordPeerLinkClick(
+  txId: string,
+  userId: string
+): Promise<
+  | { ok: true; status: string }
+  | { ok: false; reason: "NOT_FOUND" | "FORBIDDEN" | "ALREADY_DONE" | "EXPIRED" }
+> {
+  const db = getDb();
+  const now = Date.now();
+  const row = await getTransactionById(txId);
+  if (!row) return { ok: false, reason: "NOT_FOUND" };
+  if (row.userAId !== userId && row.userBId !== userId) {
+    return { ok: false, reason: "FORBIDDEN" };
+  }
+
+  const linkCheck = await db
+    .prepare(`SELECT state, claim_deadline FROM links WHERE id = ?`)
+    .bind(row.linkId)
+    .first<{ state: string; claimDeadline: number | null }>();
+  if (!linkCheck || linkCheck.state !== "claimed") {
+    return { ok: false, reason: "NOT_FOUND" };
+  }
+  if (linkCheck.claimDeadline != null && linkCheck.claimDeadline < now) {
+    return { ok: false, reason: "EXPIRED" };
+  }
+
+  if (userId === row.userAId) {
+    if (row.aClickedAt != null) return { ok: false, reason: "ALREADY_DONE" };
+    await db.prepare(`UPDATE transactions SET a_clicked_at = ? WHERE id = ?`).bind(now, txId).run();
+  } else {
+    if (row.bClickedAt != null) return { ok: false, reason: "ALREADY_DONE" };
+    await db.prepare(`UPDATE transactions SET b_clicked_at = ? WHERE id = ?`).bind(now, txId).run();
+  }
+
+  const fresh = await getTransactionById(txId);
+  if (!fresh) return { ok: false, reason: "NOT_FOUND" };
+
+  let statusOut: string;
+  if (fresh.aClickedAt && fresh.bClickedAt) {
+    statusOut = "completed";
+    await db.prepare(`UPDATE transactions SET status = 'completed' WHERE id = ?`).bind(txId).run();
+    await db
+      .prepare(
+        `UPDATE links SET state = 'consumed', consumed_at = ?, updated_at = ?
+         WHERE id = ? AND state = 'claimed'`
+      )
+      .bind(now, now, row.linkId)
+      .run();
+  } else if (fresh.aClickedAt) {
+    statusOut = "a_clicked";
+    await db.prepare(`UPDATE transactions SET status = 'a_clicked' WHERE id = ?`).bind(txId).run();
+  } else {
+    statusOut = "b_clicked";
+    await db.prepare(`UPDATE transactions SET status = 'b_clicked' WHERE id = ?`).bind(txId).run();
+  }
+
+  return { ok: true, status: statusOut };
+}
+
+export type TransactionClientView = {
+  role: "a" | "b";
+  peerUserId: string;
+  peerLink: string;
+  myLink: string;
+  status: string;
+  peerPresent: boolean;
+  iPresent: boolean;
+  peerClickedMyLink: boolean;
+  iClickedPeerLink: boolean;
+  phase: "waiting" | "peer_connected" | "done";
+  createdAt: number;
+  claimDeadline: number | null;
+  showReport: boolean;
+};
+
+export async function buildTransactionClientView(
+  txId: string,
+  userId: string,
+  nowMs: number
+): Promise<TransactionClientView | null> {
+  const db = getDb();
+  const row = await getTransactionById(txId);
+  if (!row) return null;
+
+  const linkRow = await db
+    .prepare(`SELECT claim_deadline AS claimDeadline FROM links WHERE id = ?`)
+    .bind(row.linkId)
+    .first<{ claimDeadline: number | null }>();
+
+  if (row.userAId !== userId && row.userBId !== userId) return null;
+  const role: "a" | "b" = row.userAId === userId ? "a" : "b";
+
+  const peerLink = role === "a" ? row.urlB : row.urlA;
+  const myLink = role === "a" ? row.urlA : row.urlB;
+  const peerUserId = role === "a" ? row.userBId : row.userAId;
+
+  const iPresent = role === "a" ? row.aJoinedAt != null : row.bJoinedAt != null;
+  const peerPresent = role === "a" ? row.bJoinedAt != null : row.aJoinedAt != null;
+
+  const iClickedPeerLink = role === "a" ? row.aClickedAt != null : row.bClickedAt != null;
+  const peerClickedMyLink = role === "a" ? row.bClickedAt != null : row.aClickedAt != null;
+
+  const done = Boolean(row.aClickedAt && row.bClickedAt) || row.status === "completed";
+  let phase: TransactionClientView["phase"] = "waiting";
+  if (done) phase = "done";
+  else if (peerPresent) phase = "peer_connected";
+
+  const elapsed = nowMs - row.createdAt;
+  const showReport = elapsed >= 15_000 && !peerClickedMyLink && !done;
+
+  return {
+    role,
+    peerUserId,
+    peerLink,
+    myLink,
+    status: row.status,
+    peerPresent,
+    iPresent,
+    peerClickedMyLink,
+    iClickedPeerLink,
+    phase,
+    createdAt: row.createdAt,
+    claimDeadline: linkRow?.claimDeadline ?? null,
+    showReport,
+  };
+}
+
+export async function createReport(
+  reporterId: string,
+  targetId: string,
+  reason: string
+): Promise<{ ok: true } | { ok: false; reason: "SELF" | "TEXT" }> {
+  if (reporterId === targetId) return { ok: false, reason: "SELF" };
+  const trimmed = reason.trim();
+  if (!trimmed) return { ok: false, reason: "TEXT" };
+
+  const db = getDb();
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO reports (id, reporter_id, target_id, reason, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .bind(id, reporterId, targetId, trimmed, now)
+    .run();
+
+  const cnt = await db
+    .prepare(`SELECT COUNT(*) AS c FROM reports WHERE target_id = ?`)
+    .bind(targetId)
+    .first<{ c: number }>();
+  const total = cnt?.c ?? 0;
+
+  if (total > 0 && total % 3 === 0) {
+    const u = await db
+      .prepare(`SELECT ban_count AS banCount FROM users WHERE id = ?`)
+      .bind(targetId)
+      .first<{ banCount: number }>();
+    const nextBan = (u?.banCount ?? 0) + 1;
+    if (nextBan >= 3) {
+      await db
+        .prepare(
+          `UPDATE users
+           SET account_status = 'permanent_ban',
+               ban_count = ?,
+               penalty_count = penalty_count + 1,
+               ban_until = NULL
+           WHERE id = ?`
+        )
+        .bind(nextBan, targetId)
+        .run();
+    } else {
+      const until = now + 12 * 60 * 60 * 1000;
+      await db
+        .prepare(
+          `UPDATE users
+           SET ban_until = ?,
+               ban_count = ?,
+               penalty_count = penalty_count + 1
+           WHERE id = ?`
+        )
+        .bind(until, nextBan, targetId)
+        .run();
+    }
+  }
+
+  return { ok: true };
+}
+
+// ── Link claim / consume / return ─────────────────────────────────────────────
+
+export async function acquireLink(takerId: string): Promise<
+  | { ok: true; link: { id: string; url: string; deadline: number }; transactionId: string }
+  | { ok: false; reason: "NO_LINK" | "RACE" | "NO_USER_LINK" | "NO_TX_TABLE" }
+> {
+  const db = getDb();
+  const now = Date.now();
+  const deadline = now + CLAIM_WINDOW_MS;
+
+  await purgeExpiredClaims(db, now);
+
+  const takerAccount = await db
+    .prepare(`SELECT link FROM users WHERE id = ?`)
+    .bind(takerId)
+    .first<{ link: string | null }>();
+  const takerLink = takerAccount?.link?.trim();
+  if (!takerLink) {
+    return { ok: false, reason: "NO_USER_LINK" };
+  }
+
+  const candidate = await db
+    .prepare(
+      `SELECT l.id, l.url, l.owner_id AS ownerId
+       FROM links l
+       WHERE l.state = 'queued'
+         AND l.owner_id != ?
+         AND NOT EXISTS (
+           SELECT 1 FROM receipts r
+           WHERE r.link_id = l.id AND r.taker_id = ?
+         )
+       ORDER BY l.queue_pos ASC
+       LIMIT 1`
+    )
+    .bind(takerId, takerId)
+    .first<{ id: string; url: string; ownerId: string }>();
+
+  if (!candidate) {
+    return { ok: false, reason: "NO_LINK" };
+  }
+
+  const result = await db
+    .prepare(
+      `UPDATE links
+       SET state = 'claimed', taker_id = ?, claim_deadline = ?, claimed_at = ?, updated_at = ?
+       WHERE id = ? AND state = 'queued'`
+    )
+    .bind(takerId, deadline, now, now, candidate.id)
+    .run();
+
+  if (result.meta.changes !== 1) {
+    return { ok: false, reason: "RACE" };
+  }
+
+  await db
+    .prepare(`INSERT OR IGNORE INTO receipts (link_id, taker_id, created_at) VALUES (?, ?, ?)`)
+    .bind(candidate.id, takerId, now)
+    .run();
+
+  const txId = crypto.randomUUID();
+  try {
+    await db
+      .prepare(
+        `INSERT INTO transactions (id, link_id, user_a_id, user_b_id, url_a, url_b, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`
+      )
+      .bind(txId, candidate.id, candidate.ownerId, takerId, candidate.url, takerLink, now)
+      .run();
+  } catch {
+    await db
+      .prepare(
+        `UPDATE links
+         SET state = 'queued', taker_id = NULL, claim_deadline = NULL, claimed_at = NULL, updated_at = ?
+         WHERE id = ? AND state = 'claimed' AND taker_id = ?`
+      )
+      .bind(now, candidate.id, takerId)
+      .run();
+    await db.prepare(`DELETE FROM receipts WHERE link_id = ? AND taker_id = ?`).bind(candidate.id, takerId).run();
+    return { ok: false, reason: "NO_TX_TABLE" };
+  }
+
+  return {
+    ok: true,
+    link: { id: candidate.id, url: candidate.url, deadline },
+    transactionId: txId,
+  };
+}
+
+export async function confirmLink(
+  takerId: string,
+  linkId: string
+): Promise<{ ok: true; url: string } | { ok: false; reason: "NOT_CLAIMED" | "EXPIRED" }> {
+  const db = getDb();
+  const now = Date.now();
+  await purgeExpiredClaims(db, now);
+
+  const row = await db
+    .prepare(
+      `SELECT id, url, taker_id AS takerId, claim_deadline AS claimDeadline, state
+       FROM links WHERE id = ?`
+    )
+    .bind(linkId)
+    .first<{
+      id: string;
+      url: string;
+      takerId: string | null;
+      claimDeadline: number | null;
+      state: string;
+    }>();
+
+  if (!row || row.state !== "claimed" || row.takerId !== takerId) {
+    return { ok: false, reason: "NOT_CLAIMED" };
+  }
+  if (!row.claimDeadline || row.claimDeadline < now) {
+    return { ok: false, reason: "EXPIRED" };
+  }
+
+  await db
+    .prepare(
+      `UPDATE links SET state = 'consumed', consumed_at = ?, updated_at = ?
+       WHERE id = ? AND state = 'claimed' AND taker_id = ?`
+    )
+    .bind(now, now, linkId, takerId)
+    .run();
+
+  return { ok: true, url: row.url };
+}
+
+export async function releaseLink(
+  takerId: string,
+  linkId: string
+): Promise<{ ok: boolean }> {
+  const db = getDb();
+  const now = Date.now();
+
+  await db.prepare(`DELETE FROM transactions WHERE link_id = ?`).bind(linkId).run();
+
+  const res = await db
+    .prepare(
+      `UPDATE links
+       SET state = 'queued', taker_id = NULL, claim_deadline = NULL, claimed_at = NULL, updated_at = ?
+       WHERE id = ? AND state = 'claimed' AND taker_id = ?`
+    )
+    .bind(now, linkId, takerId)
+    .run();
+
+  return { ok: res.meta.changes === 1 };
+}
