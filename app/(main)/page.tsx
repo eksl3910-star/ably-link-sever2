@@ -1277,7 +1277,7 @@ export default function HomePage() {
       ) : null}
 
       {user && entryGateAblyUrl ? (
-        <EntryGateModal targetUrl={entryGateAblyUrl} />
+        <EntryGateModal targetUrl={entryGateAblyUrl} userId={user.id} />
       ) : null}
     </>
   );

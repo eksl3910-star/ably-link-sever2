@@ -1,62 +1,71 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getKstHourBucketId } from "@/lib/kst";
-
-const STORAGE_KEY = "als_kst_entry_gate_hour";
 
 type Props = {
   targetUrl: string;
+  /** 계정별로 인정 여부를 분리 */
+  userId: string;
 };
 
-export function EntryGateModal({ targetUrl }: Props) {
-  const [, setTick] = useState(0);
+export function EntryGateModal({ targetUrl, userId }: Props) {
+  const storageKey = `als_kst_entry_gate_hour_${userId}`;
+
+  const syncBlocked = useCallback((): boolean => {
+    const bucket = getKstHourBucketId(Date.now());
+    let ack = "";
+    try {
+      ack = localStorage.getItem(storageKey) ?? "";
+    } catch {
+      /* ignore */
+    }
+    return ack !== bucket;
+  }, [storageKey]);
+
+  /** null = 아직 클라이언트에서 저장값 확인 전 */
+  const [blocked, setBlocked] = useState<boolean | null>(null);
 
   useEffect(() => {
-    const id = window.setInterval(() => setTick((n) => n + 1), 25_000);
-    const onFocus = () => setTick((n) => n + 1);
+    setBlocked(syncBlocked());
+  }, [syncBlocked]);
+
+  useEffect(() => {
+    const run = () => setBlocked(syncBlocked());
+    const id = window.setInterval(run, 15_000);
+    window.addEventListener("focus", run);
     const onVis = () => {
-      if (document.visibilityState === "visible") setTick((n) => n + 1);
+      if (document.visibilityState === "visible") run();
     };
-    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
     return () => {
       window.clearInterval(id);
-      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("focus", run);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, []);
-
-  const bucket = getKstHourBucketId(Date.now());
-  let ack = "";
-  try {
-    ack = sessionStorage.getItem(STORAGE_KEY) ?? "";
-  } catch {
-    /* ignore */
-  }
-  const blocked = ack !== bucket;
+  }, [syncBlocked]);
 
   useEffect(() => {
-    if (blocked) {
-      document.body.style.overflow = "hidden";
-    } else {
+    if (blocked !== true) {
       document.body.style.overflow = "";
+      return;
     }
+    document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = "";
     };
   }, [blocked]);
 
-  if (!blocked) return null;
+  if (blocked !== true) return null;
 
   function onConfirm() {
     window.open(targetUrl, "_blank", "noopener,noreferrer");
     try {
-      sessionStorage.setItem(STORAGE_KEY, getKstHourBucketId(Date.now()));
+      localStorage.setItem(storageKey, getKstHourBucketId(Date.now()));
     } catch {
       /* ignore */
     }
-    setTick((n) => n + 1);
+    setBlocked(false);
   }
 
   return (
@@ -84,7 +93,7 @@ export function EntryGateModal({ targetUrl }: Props) {
           링크 열고 서비스 이용하기
         </button>
         <p className="mt-4 text-center text-[11px] leading-relaxed text-gray-400">
-          한국 시간 기준 매 정각마다 다시 눌러 주세요.
+          한국 시간 기준 매 정각마다 다시 눌러 주세요. 같은 시간 안에서는 한 번만 확인하면 됩니다.
         </p>
       </div>
     </div>
