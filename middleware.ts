@@ -2,6 +2,15 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getOptionalRequestContext } from "@cloudflare/next-on-pages";
 import { ADMIN_GATE_COOKIE, SESSION_COOKIE } from "@/lib/constants";
+
+/** Pages Functions 에서 컨텍스트가 없거나(nodejs_compat 등으로) getOptionalRequestContext 가 던지면 미들웨어 전체 500 방지 */
+function getOptionalEnv(): Record<string, unknown> | undefined {
+  try {
+    return getOptionalRequestContext()?.env as Record<string, unknown> | undefined;
+  } catch {
+    return undefined;
+  }
+}
 import { verifyAdminBasicAuthHeader } from "@/lib/admin-basic-auth";
 import { createAdminGateCookie, verifyAdminGateCookie } from "@/lib/admin-gate-cookie";
 import { getMaintenanceOnSafe } from "@/lib/database";
@@ -34,8 +43,7 @@ function isProtectedUserRoute(pathname: string): boolean {
 }
 
 function getAdminBasicCredentials(): { user: string; pass: string; passAlt: string } {
-  const ctx = getOptionalRequestContext();
-  const env = ctx?.env as Record<string, unknown> | undefined;
+  const env = getOptionalEnv();
   const envUser = typeof env?.ADMIN_BASIC_USER === "string" ? env.ADMIN_BASIC_USER : "";
   const envPass = typeof env?.ADMIN_BASIC_PASS === "string" ? env.ADMIN_BASIC_PASS : "";
   const envToggle = typeof env?.ADMIN_TOGGLE_PASS === "string" ? env.ADMIN_TOGGLE_PASS : "";
@@ -119,7 +127,7 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
       }
       /* 로컬(next dev)에서 env 미설정 시 Basic 생략 — 프로덕션에서는 반드시 설정 */
     } else {
-      const ctxEnv = getOptionalRequestContext()?.env as Record<string, unknown> | undefined;
+      const ctxEnv = getOptionalEnv();
       const gateSecret = getAdminGateSecret(ctxEnv, basicUser, basicPass || passAlt);
       const gate = req.cookies.get(ADMIN_GATE_COOKIE)?.value;
       const gateOk = await verifyAdminGateCookie(gate, gateSecret);
