@@ -774,15 +774,32 @@ export async function recordPeerLinkClick(
   if (!linkCheck || linkCheck.state !== "claimed") {
     return { ok: false, reason: "NOT_FOUND" };
   }
-  if (linkCheck.claimDeadline != null && linkCheck.claimDeadline < now) {
+
+  /** 거래 창이 열려 있는 동안은 링크 큐용 15초 claim_deadline 으로 클릭을 막지 않음 */
+  const activeTxOnLink = await db
+    .prepare(
+      `SELECT 1 AS x FROM transactions WHERE link_id = ? AND COALESCE(status, '') != 'completed' LIMIT 1`
+    )
+    .bind(row.linkId)
+    .first<{ x: number }>();
+
+  if (
+    !activeTxOnLink &&
+    linkCheck.claimDeadline != null &&
+    linkCheck.claimDeadline < now
+  ) {
     return { ok: false, reason: "EXPIRED" };
   }
 
   if (userId === row.userAId) {
-    if (row.aClickedAt != null) return { ok: false, reason: "ALREADY_DONE" };
+    if (row.aClickedAt != null) {
+      return { ok: true, status: row.status };
+    }
     await db.prepare(`UPDATE transactions SET a_clicked_at = ? WHERE id = ?`).bind(now, txId).run();
   } else {
-    if (row.bClickedAt != null) return { ok: false, reason: "ALREADY_DONE" };
+    if (row.bClickedAt != null) {
+      return { ok: true, status: row.status };
+    }
     await db.prepare(`UPDATE transactions SET b_clicked_at = ? WHERE id = ?`).bind(now, txId).run();
   }
 
