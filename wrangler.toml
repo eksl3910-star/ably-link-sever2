@@ -11,6 +11,8 @@
 # 로컬 Windows에서 @cloudflare/next-on-pages는 내부적으로 bash가 필요합니다.
 # Git/CI 빌드는 Linux 이미지라 추가 설정 없이 동작합니다.
 name = "ably-link-sever2"
+compatibility_date = "2024-04-03"
+compatibility_flags = [ "nodejs_compat" ]
 pages_build_output_dir = ".vercel/output/static"
 
 [[d1_databases]]
