@@ -13,18 +13,18 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # Node 22 (.nvmrc) — Corepack으로 pnpm 고정 (pnpm/action-setup PATH 이슈·exit 127 회피)
-      - uses: actions/setup-node@v4
+      # pnpm을 먼저 PATH에 올려야 setup-node의 cache: pnpm 이 동작합니다. (package.json packageManager 와 동일)
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - uses: actions/setup-node@v5
         with:
           node-version-file: ".nvmrc"
           cache: pnpm
-
-      - name: Enable pnpm (Corepack)
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.9 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -32,7 +32,6 @@ jobs:
       - name: Build (next-on-pages)
         run: pnpm run pages:build
 
-      # name = "ably-link-sever2" (wrangler.toml, package.json)
       - name: Deploy to Cloudflare Pages
         run: pnpm exec wrangler pages deploy .vercel/output/static --project-name ably-link-sever2
         env:
