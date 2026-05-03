@@ -9,28 +9,37 @@ concurrency:
   group: deploy-pages-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      # pnpm을 먼저 PATH에 올려야 setup-node의 cache: pnpm 이 동작합니다. (package.json packageManager 와 동일)
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.9
-          run_install: false
-
       - uses: actions/setup-node@v5
         with:
           node-version-file: ".nvmrc"
-          cache: pnpm
+
+      # pnpm/action-setup(Node 20 경고) 대신 Node 번들 Corepack — bash 필요 없음
+      - name: Enable pnpm (Corepack)
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm --version
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build (next-on-pages)
         run: pnpm run pages:build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+          NODE_OPTIONS: --max-old-space-size=6144
+
+      - name: Verify build output
+        run: test -d .vercel/output/static
 
       - name: Deploy to Cloudflare Pages
         run: pnpm exec wrangler pages deploy .vercel/output/static --project-name ably-link-sever2
