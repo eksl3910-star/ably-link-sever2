@@ -47,7 +47,6 @@ function Alert({ state }: { state: AlertState }) {
 const WITHDRAW_CONFIRM_PHRASE = "위 내용을 모두 이해했습니다";
 
 const CONTACT_KAKAO_URL = "https://open.kakao.com/o/sKsl7Tsi";
-const CONTACT_IG_ORIGINAL = "https://www.instagram.com/solitunnn/";
 const CONTACT_IG_CURRENT = "https://www.instagram.com/riikuuu0/";
 
 const LAYOUT_STORAGE_KEY = "als_layout_mode";
@@ -165,15 +164,8 @@ function ContactModal({ onClose }: { onClose: () => void }) {
 
         <div className="space-y-4 text-left text-sm text-[#444]">
           <div className="rounded-xl border border-[#ececec] bg-[#fafafa] px-4 py-3">
-            <p className="text-xs font-semibold text-gray-500">원제작자</p>
-            <a
-              href={CONTACT_IG_ORIGINAL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-1 block font-semibold text-[#ff5a5f] underline-offset-2 hover:underline"
-            >
-              solitunnn (Instagram)
-            </a>
+            <p className="text-xs font-semibold text-gray-500">아이디어 제공</p>
+            <p className="mt-1 font-semibold text-[#1a1a1a]">크헤히</p>
           </div>
 
           <div className="rounded-xl border border-[#ececec] bg-[#fafafa] px-4 py-3">
