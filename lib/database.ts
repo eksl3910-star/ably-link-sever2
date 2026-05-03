@@ -321,12 +321,21 @@ export async function setMaintenance(
 ): Promise<{ maintenanceOn: boolean; touchedAt: number }> {
   const db = getDb();
   const now = Date.now();
+
+  const prev = await getSettings();
+
   await db
     .prepare(
       `UPDATE settings SET maintenance_on = ?, touched_at = ? WHERE key = 'global'`
     )
     .bind(on ? 1 : 0, now)
     .run();
+
+  /** 점검(서버 중단과 동일한 UX) 해제 시 대기 명단·매칭 큐 초기화 — 재접속 사용자가 옛 동기화 상태를 갖지 않도록 */
+  if (prev.maintenanceOn && !on) {
+    await clearTradeWaitlistAndQueue();
+  }
+
   return { maintenanceOn: on, touchedAt: now };
 }
 
@@ -1161,6 +1170,13 @@ export async function releaseLink(
 }
 
 // ── Trade waitlist / peer matching (no link-queue upload) ─────────────────────
+
+/** 대기 명단·매칭 대기열 전체 삭제 (점검 해제 시 등) */
+export async function clearTradeWaitlistAndQueue(): Promise<void> {
+  const db = getDb();
+  await db.prepare(`DELETE FROM trade_match_queue`).run();
+  await db.prepare(`DELETE FROM trade_waitlist`).run();
+}
 
 export async function getTradeWaitlistStats(userId: string): Promise<{
   count: number;
