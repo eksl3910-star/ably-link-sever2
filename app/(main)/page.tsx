@@ -10,7 +10,6 @@ import { TradeModal } from "./TradeModal";
 type AlertType = "success" | "error" | "warning" | "info";
 type AlertState = { message: string; type: AlertType } | null;
 
-type LinkStats = { total: number; mine: number };
 type User = { id: string; nickname: string };
 type Announcement = { id: string; title: string; body: string; createdAt: number };
 
@@ -22,16 +21,6 @@ function formatAnnouncementDate(ts: number): string {
     });
   } catch {
     return "";
-  }
-}
-
-async function readResponseJson<T>(res: Response): Promise<{ data: T | null; status: number }> {
-  const raw = await res.text();
-  if (!raw.trim()) return { data: null, status: res.status };
-  try {
-    return { data: JSON.parse(raw) as T, status: res.status };
-  } catch {
-    return { data: null, status: res.status };
   }
 }
 
@@ -56,7 +45,6 @@ function Alert({ state }: { state: AlertState }) {
 
 const WITHDRAW_CONFIRM_PHRASE = "위 내용을 모두 이해했습니다";
 
-const REQUEUE_COOLDOWN_MS = 3000;
 const CONTACT_KAKAO_URL = "https://open.kakao.com/o/sKsl7Tsi";
 const CONTACT_IG_ORIGINAL = "https://www.instagram.com/solitunnn/";
 const CONTACT_IG_CURRENT = "https://www.instagram.com/riikuuu0/";
@@ -198,23 +186,23 @@ function GuidePopup({
         {[
           {
             n: 1,
-            title: "에이블리에서 내 링크 복사하기",
-            desc: "에이블리 앱에서 이벤트 링크를 새로 만들고 복사해요. 카카오톡으로 받은 메시지 전체를 복사해도 돼요!",
+            title: "마이페이지에서 에이블리 링크 등록",
+            desc: "오늘 쓸 에이블리 링크(a-bly.com)를 마이페이지에서 한 번 등록해요.",
           },
           {
             n: 2,
-            title: "텍스트 박스에 붙여넣고 올리기",
-            desc: "링크를 텍스트 박스에 붙여넣거나 입력하고 '링크 올리기' 버튼을 눌러요.",
+            title: "대기 명단 등록",
+            desc: "거래할 준비가 되면 ‘대기 명단 등록’을 켜요. 숫자는 지금 대기 중인 인원이에요.",
           },
           {
             n: 3,
-            title: "빨간 버튼으로 거래 시작",
-            desc: "버튼을 누르면 거래 창이 열려요. 상대 링크를 열고, 내 링크도 상대가 열면 완료!",
+            title: "거래하기로 상대 찾기",
+            desc: "대기 명단에 있어야 거래하기가 켜져요. 누르면 상대를 찾고, 두 사람이 매칭되면 같은 거래 창이 열려요.",
           },
           {
             n: 4,
-            title: "반복하면 응모 티켓이 쌓여요",
-            desc: "에이블리에서 새 링크 만들고 → 올리고 → 받기. 이걸 반복하면 돼요!",
+            title: "상대 링크 열기 · 내 링크도 열어주기",
+            desc: "거래 창에서 안내에 따라 서로의 링크를 열면 완료!",
           },
         ].map((step) => (
           <div key={step.n} className="flex gap-4 mb-5">
@@ -232,11 +220,10 @@ function GuidePopup({
 
         <div className="bg-[#f7f7f7] rounded-xl p-4 mb-5 space-y-2">
           {[
-            "⚡ 동시에 눌러도 딱 1명만 받을 수 있어요",
-            "🚫 한 사람 링크는 딱 1번만 받을 수 있어요",
-            "⏱️ 클레임 시간 내 미완료 시 자동 반납될 수 있어요",
-            "🔗 에이블리 링크(a-bly.com)만 올릴 수 있어요",
-            "🔄 내 링크를 대기열 맨 앞으로 다시 올릴 수 있어요",
+            "⚡ 대기 명단에 있어야 거래하기를 쓸 수 있어요",
+            "🤝 거래하기를 누른 사람끼리 1:1로 매칭돼요",
+            "⏱️ 거래 창 타이머 안에 서로 링크를 열어 주세요",
+            "🔗 에이블리 링크는 마이페이지에서 등록해 주세요",
           ].map((item) => (
             <p key={item} className="text-xs text-[#555] leading-relaxed">
               {item}
@@ -420,17 +407,15 @@ export default function HomePage() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  // Stats
-  const [stats, setStats] = useState<LinkStats>({ total: 0, mine: 0 });
+  const [waitlistCount, setWaitlistCount] = useState(0);
+  const [waitlistEnrolled, setWaitlistEnrolled] = useState(false);
+  const [waitlistToggleBusy, setWaitlistToggleBusy] = useState(false);
+  const [tradeSearching, setTradeSearching] = useState(false);
+  const seekAbortRef = useRef(false);
+
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [activeAnnIdx, setActiveAnnIdx] = useState(0);
   const [announcementOpen, setAnnouncementOpen] = useState(true);
-
-  // Upload section
-  const [linkText, setLinkText] = useState("");
-  const [uploadAlert, setUploadAlert] = useState<AlertState>(null);
-  const [uploading, setUploading] = useState(false);
-  const [showRequeue, setShowRequeue] = useState(false);
 
   // Receive section
   const [receiveAlert, setReceiveAlert] = useState<AlertState>(null);
@@ -445,11 +430,8 @@ export default function HomePage() {
   const [showGuide, setShowGuide] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [showContact, setShowContact] = useState(false);
-  const [requeueBusy, setRequeueBusy] = useState(false);
   const [layoutPref, setLayoutPref] = useState<LayoutPref>("auto");
   const [mediaDesktop, setMediaDesktop] = useState(false);
-
-  const requeueLastAtRef = useRef(0);
 
   // ── Load current user ───────────────────────────────────────────────────────
 
@@ -508,11 +490,14 @@ export default function HomePage() {
 
   // ── Load stats ──────────────────────────────────────────────────────────────
 
-  const loadStats = useCallback(() => {
-    fetch("/api/links/stats")
-      .then((r) => r.json() as Promise<{ ok?: boolean; total?: number; mine?: number }>)
+  const loadWaitlistStats = useCallback(() => {
+    fetch("/api/trade/waitlist")
+      .then((r) => r.json() as Promise<{ ok?: boolean; count?: number; enrolled?: boolean }>)
       .then((d) => {
-        if (d.ok) setStats({ total: d.total ?? 0, mine: d.mine ?? 0 });
+        if (d.ok) {
+          setWaitlistCount(d.count ?? 0);
+          setWaitlistEnrolled(Boolean(d.enrolled));
+        }
       })
       .catch(() => null);
   }, []);
@@ -527,9 +512,9 @@ export default function HomePage() {
   }, []);
 
   const refreshDashboard = useCallback(() => {
-    loadStats();
+    loadWaitlistStats();
     loadAnnouncements();
-  }, [loadStats, loadAnnouncements]);
+  }, [loadWaitlistStats, loadAnnouncements]);
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -589,165 +574,102 @@ export default function HomePage() {
     router.push("/welcome");
   }
 
-  // ── Submit link ─────────────────────────────────────────────────────────────
+  // ── Trade waitlist toggle ────────────────────────────────────────────────────
 
-  async function handleSubmit() {
-    setUploadAlert(null);
-    const text = linkText.trim();
-    if (!text) {
-      setUploadAlert({ message: "에이블리 링크를 입력해주세요.", type: "warning" });
-      return;
-    }
-
-    setUploading(true);
+  async function handleToggleWaitlist() {
+    if (waitlistToggleBusy) return;
+    setWaitlistToggleBusy(true);
     try {
-      const res = await fetch("/api/links/submit", {
+      const res = await fetch("/api/trade/waitlist", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ enrolled: !waitlistEnrolled }),
       });
-      const { data } = await readResponseJson<{ ok?: boolean; error?: string }>(res);
-
-      if (!data) {
-        setUploadAlert({
-          message: `서버 응답을 읽을 수 없습니다. (HTTP ${res.status})`,
-          type: "error",
-        });
+      const d = (await res.json()) as { ok?: boolean; count?: number; enrolled?: boolean; error?: string };
+      if (!res.ok || !d.ok) {
+        setReceiveAlert({ message: d.error ?? "대기 명단 설정에 실패했습니다.", type: "error" });
         return;
       }
-
-      if (!res.ok || !data.ok) {
-        setUploadAlert({ message: data.error ?? "업로드 오류가 발생했습니다.", type: "error" });
-        return;
-      }
-
-      setLinkText("");
-      setShowRequeue(true);
-      setUploadAlert({ message: "링크가 올라갔어요! 🎉", type: "success" });
-      refreshDashboard();
+      setWaitlistCount(d.count ?? 0);
+      setWaitlistEnrolled(Boolean(d.enrolled));
     } catch {
-      setUploadAlert({ message: "연결에 실패했습니다. 네트워크를 확인해주세요.", type: "error" });
+      setReceiveAlert({ message: "연결에 실패했습니다.", type: "error" });
     } finally {
-      setUploading(false);
+      setWaitlistToggleBusy(false);
     }
   }
 
-  // ── Requeue ─────────────────────────────────────────────────────────────────
+  // ── Seek trade partner (poll until matched) ─────────────────────────────────
 
-  async function handleRequeue() {
-    if (requeueBusy) return;
-    const now = Date.now();
-    const elapsed = now - requeueLastAtRef.current;
-    if (elapsed < REQUEUE_COOLDOWN_MS) {
-      const sec = Math.ceil((REQUEUE_COOLDOWN_MS - elapsed) / 1000);
-      setUploadAlert({
-        message: `너무 자주 눌렀어요. ${sec}초 후에 다시 시도해주세요.`,
-        type: "info",
-      });
+  async function handleSeekTrade() {
+    setReceiveAlert(null);
+    if (!waitlistEnrolled) {
+      setReceiveAlert({ message: "먼저 ‘대기 명단 등록’을 켜 주세요.", type: "warning" });
       return;
     }
 
-    requeueLastAtRef.current = now;
-    setRequeueBusy(true);
-    try {
-      const res = await fetch("/api/links/requeue", { method: "POST" });
-      const { data } = await readResponseJson<{ ok?: boolean; reason?: string; error?: string }>(res);
-
-      if (!data || !res.ok || !data.ok) {
-        const msg =
-          data?.reason === "NO_QUEUED_LINK"
-            ? "대기 중인 내 링크가 없어요."
-            : data?.error ?? "오류가 발생했습니다.";
-        setUploadAlert({ message: msg, type: "info" });
-        return;
-      }
-      setUploadAlert({ message: "내 링크가 대기열 맨 앞으로 이동됐어요! 🔄", type: "success" });
-    } catch {
-      setUploadAlert({ message: "연결에 실패했습니다. 잠시 후 다시 시도해주세요.", type: "error" });
-    } finally {
-      setRequeueBusy(false);
-    }
-  }
-
-  // ── Receive link ─────────────────────────────────────────────────────────────
-
-  async function handleReceive() {
-    setReceiveAlert(null);
+    seekAbortRef.current = false;
     setReceiving(true);
+    setTradeSearching(true);
 
     try {
-      const res = await fetch("/api/links/claim", { method: "POST" });
-      const { data } = await readResponseJson<{
-        ok?: boolean;
-        reason?: string;
-        error?: string;
-        transactionId?: string;
-        link?: { id: string; url: string; deadline: number };
-      }>(res);
+      for (let i = 0; i < 300; i++) {
+        if (seekAbortRef.current) break;
 
-      if (!data) {
-        setReceiveAlert({
-          message: `서버 응답을 읽을 수 없습니다. (HTTP ${res.status})`,
-          type: "error",
-        });
-        return;
-      }
+        const res = await fetch("/api/trade/seek", { method: "POST" });
+        const data = (await res.json()) as {
+          ok?: boolean;
+          waiting?: boolean;
+          error?: string;
+          reason?: string;
+          transactionId?: string;
+          link?: { id: string; url: string; deadline: number };
+        };
 
-      if (!res.ok) {
-        setReceiveAlert({
-          message: data.error ?? "링크를 받지 못했어요.",
-          type: res.status === 401 ? "warning" : "error",
-        });
-        return;
-      }
-
-      if (!data.ok) {
-        const msg =
-          data.reason === "NO_LINK"
-            ? "지금 받을 수 있는 링크가 없어요."
-            : data.reason === "RACE"
-              ? "다른 사람이 먼저 받았어요. 다시 눌러주세요."
+        if (!res.ok || data.ok === false) {
+          const msg =
+            data.reason === "NOT_ON_WAITLIST"
+              ? "먼저 대기 명단에 등록해 주세요."
               : data.reason === "NO_USER_LINK"
-                ? (data.error ?? "먼저 오늘의 에이블리 링크를 등록해 주세요.")
-                : data.reason === "NO_TX_TABLE"
-                  ? (data.error ?? "서버 설정 오류입니다.")
-                  : "링크를 받지 못했어요.";
-        setReceiveAlert({ message: msg, type: "info" });
+                ? (data.error ?? "마이페이지에서 에이블리 링크를 등록해 주세요.")
+                : (data.error ?? "거래를 시작할 수 없어요.");
+          setReceiveAlert({ message: msg, type: "warning" });
+          return;
+        }
+
+        if (data.transactionId && data.link) {
+          setTradeSession({ transactionId: data.transactionId, linkId: data.link.id });
+          return;
+        }
+
+        if (data.waiting) {
+          await new Promise((r) => setTimeout(r, 1200));
+          continue;
+        }
+
+        setReceiveAlert({ message: "매칭 응답을 이해하지 못했습니다. 다시 시도해 주세요.", type: "error" });
         return;
       }
 
-      if (data.link && data.transactionId) {
-        setTradeSession({ transactionId: data.transactionId, linkId: data.link.id });
-      }
-    } catch {
       setReceiveAlert({
-        message: "연결에 실패했습니다. 네트워크를 확인해주세요.",
-        type: "error",
+        message: "아직 상대를 찾지 못했어요. 잠시 후 다시 눌러 주세요.",
+        type: "info",
       });
+    } catch {
+      setReceiveAlert({ message: "연결에 실패했습니다. 네트워크를 확인해 주세요.", type: "error" });
     } finally {
       setReceiving(false);
+      setTradeSearching(false);
     }
   }
 
   function resetTradeUi() {
+    seekAbortRef.current = true;
     setTradeSession(null);
     setReceiving(false);
+    setTradeSearching(false);
     setReceiveAlert(null);
     refreshDashboard();
-  }
-
-  // ── Paste from clipboard ─────────────────────────────────────────────────────
-
-  async function handlePaste() {
-    try {
-      const text = await navigator.clipboard.readText();
-      setLinkText(text);
-    } catch {
-      setUploadAlert({
-        message: "붙여넣기 권한이 필요해요. 브라우저에서 클립보드 접근을 허용해주세요.",
-        type: "warning",
-      });
-    }
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -958,70 +880,40 @@ export default function HomePage() {
                 <span
                   className={`font-bold text-[#ff5a5f] ${isDesktopLayout ? "text-3xl" : "text-2xl"}`}
                 >
-                  {stats.total}
+                  {waitlistCount}
                 </span>
                 <span className={`text-gray-500 ${isDesktopLayout ? "text-base" : "text-sm"}`}>
-                  개의 링크 대기 중
+                  명의 거래 상대 대기 중
                 </span>
               </div>
 
-              {/* Upload card */}
+              {/* 대기 명단 */}
               <div
                 className={`rounded-2xl border border-[#ececec] bg-white shadow-sm transition-shadow hover:shadow-md ${
                   isDesktopLayout ? "p-5 lg:p-6" : "p-4"
                 }`}
               >
-                <p className="text-xs font-semibold text-gray-400 mb-3">내 링크 올리기</p>
-
-                <textarea
-                  value={linkText}
-                  onChange={(e) => setLinkText(e.target.value)}
-                  placeholder="에이블리 링크를 붙여넣어주세요 (a-bly.com)"
-                  rows={isDesktopLayout ? 4 : 3}
-                  className={`w-full rounded-xl border border-[#e5e7eb] px-3 py-2.5 resize-none outline-none focus:border-[#ff5a5f] transition-colors placeholder:text-gray-300 mb-2 ${
-                    isDesktopLayout ? "text-base min-h-[100px]" : "text-sm"
-                  }`}
-                />
-
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => void handlePaste()}
-                    className={`flex-1 rounded-xl border border-[#e5e7eb] text-gray-500 hover:bg-gray-50 active:scale-[0.98] transition-all ${
-                      isDesktopLayout ? "h-11 text-sm" : "h-10 text-sm"
-                    }`}
-                  >
-                    📋 붙여넣기
-                  </button>
-                  <button
-                    onClick={() => void handleSubmit()}
-                    disabled={uploading}
-                    className={`flex-1 rounded-xl bg-[#ff5a5f] text-white font-semibold disabled:opacity-50 hover:bg-[#e04448] active:scale-[0.98] transition-all ${
-                      isDesktopLayout ? "h-11 text-sm" : "h-10 text-sm"
-                    }`}
-                  >
-                    {uploading ? "업로드 중..." : "링크 올리기"}
-                  </button>
-                </div>
-
-                {showRequeue && (
-                  <button
-                    type="button"
-                    onClick={() => void handleRequeue()}
-                    disabled={requeueBusy}
-                    title="같은 동작은 3초에 한 번만 서버로 전송돼요."
-                    className={`mt-2 w-full rounded-xl border border-[#e5e7eb] text-gray-500 transition-all hover:bg-gray-50 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 ${
-                      isDesktopLayout ? "h-11 text-sm" : "h-10 text-sm"
-                    }`}
-                  >
-                    {requeueBusy ? "처리 중…" : "🔄 내 링크 대기열 맨 앞으로 다시 올리기"}
-                  </button>
-                )}
-
-                {uploadAlert && (
-                  <div className="mt-2">
-                    <Alert state={uploadAlert} />
-                  </div>
-                )}
+                <p className="mb-3 text-xs font-semibold text-gray-400">거래 대기 명단</p>
+                <button
+                  type="button"
+                  onClick={() => void handleToggleWaitlist()}
+                  disabled={waitlistToggleBusy}
+                  aria-pressed={waitlistEnrolled}
+                  className={`w-full rounded-2xl border-2 font-semibold transition-all active:scale-[0.98] disabled:opacity-50 ${
+                    waitlistEnrolled
+                      ? "border-[#ff5a5f] bg-[#fff5f5] py-4 text-[#ff5a5f] shadow-inner"
+                      : "border-[#e5e7eb] bg-white py-4 text-gray-600 hover:bg-gray-50"
+                  } ${isDesktopLayout ? "text-base" : "text-sm"}`}
+                >
+                  {waitlistToggleBusy
+                    ? "처리 중…"
+                    : waitlistEnrolled
+                      ? "✓ 대기 명단에 등록됨 · 탭하여 해제"
+                      : "대기 명단 등록하기"}
+                </button>
+                <p className="mt-2 text-center text-xs leading-relaxed text-gray-400">
+                  등록해야 위 숫자에 포함되고, 거래하기를 쓸 수 있어요.
+                </p>
               </div>
 
               {/* Receive / trade */}
@@ -1029,19 +921,28 @@ export default function HomePage() {
                 <div>
                   {receiveAlert && <Alert state={receiveAlert} />}
                   <button
-                    onClick={() => void handleReceive()}
-                    disabled={receiving || needsDailyLink}
+                    onClick={() => void handleSeekTrade()}
+                    disabled={receiving || needsDailyLink || !waitlistEnrolled}
                     className={`w-full rounded-2xl bg-[#ff5a5f] text-white font-bold shadow-[0_4px_16px_rgba(255,90,95,0.25)] disabled:bg-gray-300 disabled:shadow-none disabled:cursor-not-allowed active:scale-[0.97] transition-all ${
                       isDesktopLayout
                         ? "h-[4.5rem] text-xl"
                         : "h-16 text-lg"
                     }`}
                   >
-                    {receiving ? "연결 중..." : "거래하기"}
+                    {tradeSearching
+                      ? "거래 상대를 찾는 중…"
+                      : receiving
+                        ? "연결 중…"
+                        : "거래하기"}
                   </button>
+                  {!waitlistEnrolled ? (
+                    <p className="mt-2 text-center text-xs text-amber-700">
+                      거래하기를 쓰려면 위에서 대기 명단을 먼저 켜 주세요.
+                    </p>
+                  ) : null}
                   {needsDailyLink ? (
                     <p className="mt-2 text-center text-xs text-gray-500">
-                      오늘의 링크 등록 후 이용할 수 있어요.
+                      마이페이지에서 오늘의 에이블리 링크를 등록한 뒤 이용할 수 있어요.
                     </p>
                   ) : null}
                 </div>

@@ -1011,3 +1011,172 @@ export async function releaseLink(
 
   return { ok: res.meta.changes === 1 };
 }
+
+// ── Trade waitlist / peer matching (no link-queue upload) ─────────────────────
+
+export async function getTradeWaitlistStats(userId: string): Promise<{
+  count: number;
+  enrolled: boolean;
+}> {
+  const db = getDb();
+  const cnt = await db
+    .prepare(`SELECT COUNT(*) AS c FROM trade_waitlist`)
+    .first<{ c: number }>();
+  const row = await db
+    .prepare(`SELECT 1 AS x FROM trade_waitlist WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ x: number }>();
+  return { count: cnt?.c ?? 0, enrolled: row != null };
+}
+
+export async function setTradeWaitlistEnrollment(
+  userId: string,
+  enrolled: boolean
+): Promise<void> {
+  const db = getDb();
+  if (enrolled) {
+    const now = Date.now();
+    await db
+      .prepare(`INSERT OR REPLACE INTO trade_waitlist (user_id, joined_at) VALUES (?, ?)`)
+      .bind(userId, now)
+      .run();
+  } else {
+    await db.prepare(`DELETE FROM trade_waitlist WHERE user_id = ?`).bind(userId).run();
+    await db.prepare(`DELETE FROM trade_match_queue WHERE user_id = ?`).bind(userId).run();
+  }
+}
+
+export type SeekTradeResult =
+  | { ok: true; link: { id: string; url: string; deadline: number }; transactionId: string }
+  | { ok: true; waiting: true }
+  | {
+      ok: false;
+      reason: "NOT_ON_WAITLIST" | "NO_USER_LINK" | "NO_TX_TABLE";
+    };
+
+export async function seekTradePartner(userId: string): Promise<SeekTradeResult> {
+  const db = getDb();
+  const now = Date.now();
+  const deadline = now + CLAIM_WINDOW_MS;
+  await purgeExpiredClaims(db, now);
+
+  const onList = await db
+    .prepare(`SELECT 1 AS x FROM trade_waitlist WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ x: number }>();
+  if (!onList) return { ok: false, reason: "NOT_ON_WAITLIST" };
+
+  const takerAccount = await db
+    .prepare(`SELECT link FROM users WHERE id = ?`)
+    .bind(userId)
+    .first<{ link: string | null }>();
+  const myLink = takerAccount?.link?.trim();
+  if (!myLink) return { ok: false, reason: "NO_USER_LINK" };
+
+  const existing = await db
+    .prepare(
+      `SELECT t.id AS txId, t.link_id AS linkId, l.url AS url, l.claim_deadline AS cd
+       FROM transactions t
+       JOIN links l ON l.id = t.link_id
+       WHERE (t.user_a_id = ? OR t.user_b_id = ?)
+         AND l.state = 'claimed'
+         AND COALESCE(t.status, '') != 'completed'
+       LIMIT 1`
+    )
+    .bind(userId, userId)
+    .first<{ txId: string; linkId: string; url: string; cd: number | null }>();
+
+  if (existing) {
+    return {
+      ok: true,
+      link: {
+        id: existing.linkId,
+        url: existing.url,
+        deadline: existing.cd ?? deadline,
+      },
+      transactionId: existing.txId,
+    };
+  }
+
+  const peerRow = await db
+    .prepare(
+      `SELECT user_id AS peerId FROM trade_match_queue WHERE user_id != ? ORDER BY requested_at ASC LIMIT 1`
+    )
+    .bind(userId)
+    .first<{ peerId: string }>();
+
+  if (peerRow) {
+    const peerId = peerRow.peerId;
+    const peerAccount = await db
+      .prepare(`SELECT link FROM users WHERE id = ?`)
+      .bind(peerId)
+      .first<{ link: string | null }>();
+    const peerLink = peerAccount?.link?.trim();
+
+    await db
+      .prepare(`DELETE FROM trade_match_queue WHERE user_id IN (?, ?)`)
+      .bind(peerId, userId)
+      .run();
+
+    if (!peerLink) {
+      await db.prepare(`INSERT OR REPLACE INTO trade_match_queue (user_id, requested_at) VALUES (?, ?)`).bind(userId, now).run();
+      return { ok: true, waiting: true };
+    }
+
+    const linkId = crypto.randomUUID();
+    const txId = crypto.randomUUID();
+
+    try {
+      await db
+        .prepare(
+          `INSERT INTO links (
+             id, url, owner_id, state, queue_pos, created_at, updated_at,
+             taker_id, claim_deadline, claimed_at
+           ) VALUES (?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, NULL)`
+        )
+        .bind(linkId, peerLink, peerId, now, now, now)
+        .run();
+
+      await db
+        .prepare(
+          `UPDATE links SET state = 'claimed', taker_id = ?, claim_deadline = ?, claimed_at = ?, updated_at = ?
+           WHERE id = ? AND state = 'queued'`
+        )
+        .bind(userId, deadline, now, now, linkId)
+        .run();
+
+      await db
+        .prepare(`INSERT OR IGNORE INTO receipts (link_id, taker_id, created_at) VALUES (?, ?, ?)`)
+        .bind(linkId, userId, now)
+        .run();
+
+      await db
+        .prepare(
+          `INSERT INTO transactions (id, link_id, user_a_id, user_b_id, url_a, url_b, status, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`
+        )
+        .bind(txId, linkId, peerId, userId, peerLink, myLink, now)
+        .run();
+    } catch {
+      try {
+        await db.prepare(`DELETE FROM receipts WHERE link_id = ?`).bind(linkId).run();
+        await db.prepare(`DELETE FROM links WHERE id = ?`).bind(linkId).run();
+      } catch {
+        /* ignore cleanup errors */
+      }
+      return { ok: false, reason: "NO_TX_TABLE" };
+    }
+
+    return {
+      ok: true,
+      link: { id: linkId, url: peerLink, deadline },
+      transactionId: txId,
+    };
+  }
+
+  await db
+    .prepare(`INSERT OR REPLACE INTO trade_match_queue (user_id, requested_at) VALUES (?, ?)`)
+    .bind(userId, now)
+    .run();
+  return { ok: true, waiting: true };
+}
