@@ -30,7 +30,7 @@ export async function GET(_req: Request, ctx: Params) {
   const now = Date.now();
   const view = await buildTransactionClientView(id, user.id, now);
   if (!view) {
-    return NextResponse.json({ ok: false, error: "거래를 찾을 수 없습니다." }, { status: 404 });
+    return NextResponse.json({ ok: false, error: "맞교를 찾을 수 없습니다." }, { status: 404 });
   }
 
   return NextResponse.json({ ok: true, ...view });

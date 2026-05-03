@@ -7,6 +7,7 @@ type Settings = {
   touchedAt: number;
   maintenanceMessage: string;
   entryGateAblyUrl: string;
+  entryGateEnabled: boolean;
 };
 type Metrics = {
   totalUsers: number;
@@ -72,6 +73,7 @@ export default function AdminPage() {
   const [editTitle, setEditTitle] = useState("");
   const [editBody, setEditBody] = useState("");
   const [entryGateInput, setEntryGateInput] = useState("");
+  const [entryGateEnabled, setEntryGateEnabled] = useState(true);
 
   // Load current settings
   useEffect(() => {
@@ -103,12 +105,18 @@ export default function AdminPage() {
             typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()
               ? d.entryGateAblyUrl
               : "https://applink.a-bly.com/p25459",
+          entryGateEnabled: d.entryGateEnabled !== false,
         });
         if (typeof d.maintenanceMessage === "string") setMaintenanceMsg(d.maintenanceMessage);
         if (typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()) {
           setEntryGateInput(d.entryGateAblyUrl);
         } else {
           setEntryGateInput("https://applink.a-bly.com/p25459");
+        }
+        if (typeof d.entryGateEnabled === "boolean") {
+          setEntryGateEnabled(d.entryGateEnabled);
+        } else {
+          setEntryGateEnabled(true);
         }
       } catch {
         setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
@@ -237,12 +245,17 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/entry-gate-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password, url: entryGateInput }),
+        body: JSON.stringify({
+          password,
+          url: entryGateInput,
+          enabled: entryGateEnabled,
+        }),
       });
       const { data } = await readResponseJson<{
         ok?: boolean;
         error?: string;
         entryGateAblyUrl?: string;
+        entryGateEnabled?: boolean;
       }>(res);
       if (!data || !res.ok || !data.ok) {
         setAlert({
@@ -253,11 +266,24 @@ export default function AdminPage() {
       }
       if (typeof data.entryGateAblyUrl === "string") {
         setEntryGateInput(data.entryGateAblyUrl);
-        setSettings((prev) =>
-          prev ? { ...prev, entryGateAblyUrl: data.entryGateAblyUrl! } : prev
-        );
       }
-      setAlert({ message: "메인 진입 에이블리 링크를 저장했습니다.", type: "success" });
+      if (typeof data.entryGateEnabled === "boolean") {
+        setEntryGateEnabled(data.entryGateEnabled);
+      }
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...(typeof data.entryGateAblyUrl === "string"
+                ? { entryGateAblyUrl: data.entryGateAblyUrl }
+                : {}),
+              ...(typeof data.entryGateEnabled === "boolean"
+                ? { entryGateEnabled: data.entryGateEnabled }
+                : {}),
+            }
+          : null
+      );
+      setAlert({ message: "메인 진입 게이트 설정을 저장했습니다.", type: "success" });
     } catch {
       setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
     } finally {
@@ -537,11 +563,20 @@ export default function AdminPage() {
         </div>
 
         <div className="mt-4 rounded-xl border border-[#e7e9ee] bg-[#fbfbfd] p-4">
-          <p className="text-sm font-semibold text-[#1f2430]">메인 진입 게이트 링크</p>
+          <p className="text-sm font-semibold text-[#1f2430]">메인 진입 게이트</p>
           <p className="mt-1 text-xs text-[#7c8394]">
             로그인 후 메인에서 사용자가 눌러야 하는 「에이블리 수익성 링크」입니다. HTTPS이며 a-bly.com
-            도메인만 허용됩니다.
+            도메인만 허용됩니다. 아래 사용 안 함으로 두면 팝업이 뜨지 않습니다.
           </p>
+          <label className="mt-3 flex cursor-pointer items-center gap-2.5">
+            <input
+              type="checkbox"
+              checked={entryGateEnabled}
+              onChange={(e) => setEntryGateEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-[#d9dde6] accent-[#111]"
+            />
+            <span className="text-sm font-medium text-[#1f2430]">메인 진입 게이트 사용</span>
+          </label>
           <input
             type="url"
             value={entryGateInput}
@@ -556,7 +591,7 @@ export default function AdminPage() {
             onClick={() => void saveEntryGateUrl()}
             className="mt-3 h-10 w-full rounded-xl bg-[#111] text-sm font-bold text-white disabled:opacity-50"
           >
-            링크 저장
+            저장
           </button>
         </div>
 

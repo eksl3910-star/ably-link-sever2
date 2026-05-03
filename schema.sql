@@ -1,5 +1,5 @@
 -- =============================================================================
--- abiy-link-sever2 — 통합 D1 스키마 (에이블리 링크 교환 · 거래 · 신고)
+-- abiy-link-sever2 — 통합 D1 스키마 (에이블리 링크 교환 · 맞교 · 신고)
 -- 다른 프로젝트(ably-link-server 등)와 같은 D1 인스턴스를 공유하지 마세요.
 -- 신규 DB 또는 문서용 전체 정의. 기존 배포는 migrations/*.sql 순서로 적용.
 -- =============================================================================
@@ -9,15 +9,16 @@ PRAGMA foreign_keys = ON;
 -- --- 설정 --------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS settings (
-  key                  TEXT    PRIMARY KEY,
-  maintenance_on       INTEGER NOT NULL DEFAULT 0,
-  touched_at           INTEGER NOT NULL,
-  maintenance_message  TEXT    NOT NULL DEFAULT '',
-  entry_gate_ably_url  TEXT    NOT NULL DEFAULT 'https://applink.a-bly.com/p25459'
+  key                   TEXT    PRIMARY KEY,
+  maintenance_on        INTEGER NOT NULL DEFAULT 0,
+  touched_at            INTEGER NOT NULL,
+  maintenance_message   TEXT    NOT NULL DEFAULT '',
+  entry_gate_ably_url   TEXT    NOT NULL DEFAULT 'https://applink.a-bly.com/p25459',
+  entry_gate_enabled    INTEGER NOT NULL DEFAULT 1
 );
 
-INSERT OR IGNORE INTO settings (key, maintenance_on, touched_at, maintenance_message, entry_gate_ably_url)
-  VALUES ('global', 0, (unixepoch() * 1000), '', 'https://applink.a-bly.com/p25459');
+INSERT OR IGNORE INTO settings (key, maintenance_on, touched_at, maintenance_message, entry_gate_ably_url, entry_gate_enabled)
+  VALUES ('global', 0, (unixepoch() * 1000), '', 'https://applink.a-bly.com/p25459', 1);
 
 -- --- 사용자 ------------------------------------------------------------------
 
@@ -85,7 +86,7 @@ CREATE TABLE IF NOT EXISTS receipts (
   FOREIGN KEY (taker_id) REFERENCES users (id)
 );
 
--- --- 거래 (1:1, 상태 + 조인/클릭 시각) ----------------------------------------
+-- --- 맞교 (1:1, 상태 + 조인/클릭 시각) ----------------------------------------
 
 CREATE TABLE IF NOT EXISTS transactions (
   id          TEXT    PRIMARY KEY,

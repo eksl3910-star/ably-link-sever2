@@ -126,7 +126,7 @@ function ReportNoticeModal({
         </p>
         <p className="mt-3 text-center text-2xl font-bold text-[#c0392b]">신고 누적 {count}회</p>
         <p className="mt-3 text-center text-sm leading-relaxed text-[#555]">
-          신고가 누적되면 거래 제한 등 제재가 적용될 수 있어요. 원활한 거래를 위해 규칙을 지켜 주세요.
+          신고가 누적되면 맞교 제한 등 제재가 적용될 수 있어요. 원활한 맞교를 위해 규칙을 지켜 주세요.
         </p>
         <button
           type="button"
@@ -268,17 +268,17 @@ function GuidePopup({
           {
             n: 2,
             title: "대기 명단 등록",
-            desc: "거래할 준비가 되면 ‘대기 명단 등록’을 켜요. 숫자는 지금 대기 중인 인원이에요.",
+            desc: "맞교할 준비가 되면 ‘대기 명단 등록’을 켜요. 숫자는 지금 대기 중인 인원이에요.",
           },
           {
             n: 3,
-            title: "거래하기로 상대 찾기",
-            desc: "대기 명단에 있어야 거래하기가 켜져요. 누르면 상대를 찾고, 두 사람이 매칭되면 같은 거래 창이 열려요.",
+            title: "맞교하기로 상대 찾기",
+            desc: "대기 명단에 있어야 맞교하기가 켜져요. 누르면 상대를 찾고, 두 사람이 매칭되면 같은 맞교 창이 열려요.",
           },
           {
             n: 4,
             title: "상대 링크 열기 · 내 링크도 열어주기",
-            desc: "거래 창에서 안내에 따라 서로의 링크를 열면 완료!",
+            desc: "맞교 창에서 안내에 따라 서로의 링크를 열면 완료!",
           },
         ].map((step) => (
           <div key={step.n} className="flex gap-4 mb-5">
@@ -296,9 +296,9 @@ function GuidePopup({
 
         <div className="bg-[#f7f7f7] rounded-xl p-4 mb-5 space-y-2">
           {[
-            "⚡ 대기 명단에 있어야 거래하기를 쓸 수 있어요",
-            "🤝 거래하기를 누른 사람끼리 1:1로 매칭돼요",
-            "⏱️ 거래 창 타이머 안에 서로 링크를 열어 주세요",
+            "⚡ 대기 명단에 있어야 맞교하기를 쓸 수 있어요",
+            "🤝 맞교하기를 누른 사람끼리 1:1로 매칭돼요",
+            "⏱️ 맞교 창 타이머 안에 서로 링크를 열어 주세요",
             "🔗 에이블리 링크는 마이페이지에서 등록해 주세요",
           ].map((item) => (
             <p key={item} className="text-xs text-[#555] leading-relaxed">
@@ -521,6 +521,8 @@ export default function HomePage() {
   const [reportNoticeCount, setReportNoticeCount] = useState<number | null>(null);
   /** 메인 진입 게이트용 에이블리 링크 (관리자 설정) */
   const [entryGateAblyUrl, setEntryGateAblyUrl] = useState<string>(DEFAULT_ENTRY_GATE_ABLY_URL);
+  /** 관리자가 끄면 진입 게이트 비표시 */
+  const [entryGateEnabled, setEntryGateEnabled] = useState(true);
 
   // ── Load current user ───────────────────────────────────────────────────────
 
@@ -533,8 +535,12 @@ export default function HomePage() {
         const s = (await sRes.json()) as {
           maintenanceOn?: boolean;
           entryGateAblyUrl?: string;
+          entryGateEnabled?: boolean;
         };
         if (cancelled) return;
+        if (typeof s.entryGateEnabled === "boolean") {
+          setEntryGateEnabled(s.entryGateEnabled);
+        }
         if (typeof s.entryGateAblyUrl === "string" && s.entryGateAblyUrl.trim()) {
           setEntryGateAblyUrl(s.entryGateAblyUrl);
         }
@@ -661,8 +667,14 @@ export default function HomePage() {
     void checkReportNotice();
     void refreshAccountFlags();
     void fetch("/api/settings")
-      .then((r) => r.json() as Promise<{ entryGateAblyUrl?: string }>)
+      .then(
+        (r) =>
+          r.json() as Promise<{ entryGateAblyUrl?: string; entryGateEnabled?: boolean }>
+      )
       .then((s) => {
+        if (typeof s.entryGateEnabled === "boolean") {
+          setEntryGateEnabled(s.entryGateEnabled);
+        }
         if (typeof s.entryGateAblyUrl === "string" && s.entryGateAblyUrl.trim()) {
           setEntryGateAblyUrl(s.entryGateAblyUrl);
         }
@@ -855,10 +867,10 @@ export default function HomePage() {
               : data.reason === "NO_USER_LINK"
                 ? (data.error ?? "마이페이지에서 에이블리 링크를 등록해 주세요.")
                 : data.reason === "TRADE_TEMP_BAN"
-                  ? (data.error ?? "신고 누적으로 일정 시간 동안 거래할 수 없습니다.")
+                  ? (data.error ?? "신고 누적으로 일정 시간 동안 맞교할 수 없습니다.")
                   : data.reason === "PERMANENT_TRADE_BAN"
-                    ? (data.error ?? "계정 제재로 거래할 수 없습니다.")
-                    : (data.error ?? "거래를 시작할 수 없어요.");
+                    ? (data.error ?? "계정 제재로 맞교할 수 없습니다.")
+                    : (data.error ?? "맞교를 시작할 수 없어요.");
           setReceiveAlert({ message: msg, type: "warning" });
           return;
         }
@@ -1118,7 +1130,7 @@ export default function HomePage() {
                   {waitlistCount}
                 </span>
                 <span className={`text-gray-500 ${isDesktopLayout ? "text-base" : "text-sm"}`}>
-                  명의 거래 상대 대기 중
+                  명의 맞교 상대 대기 중
                 </span>
                 <button
                   type="button"
@@ -1139,7 +1151,7 @@ export default function HomePage() {
                   isDesktopLayout ? "p-5 lg:p-6" : "p-4"
                 }`}
               >
-                <p className="mb-3 text-xs font-semibold text-gray-400">거래 대기 명단</p>
+                <p className="mb-3 text-xs font-semibold text-gray-400">맞교 대기 명단</p>
                 <button
                   type="button"
                   onClick={() => void handleToggleWaitlist()}
@@ -1158,7 +1170,7 @@ export default function HomePage() {
                       : "대기 명단 등록하기"}
                 </button>
                 <p className="mt-2 text-center text-xs leading-relaxed text-gray-400">
-                  등록해야 위 숫자에 포함되고, 거래하기를 쓸 수 있어요. 다른 화면으로 30초 이상
+                  등록해야 위 숫자에 포함되고, 맞교하기를 쓸 수 있어요. 다른 화면으로 30초 이상
                   머물면 대기는 자동으로 꺼져요.
                 </p>
               </div>
@@ -1177,14 +1189,14 @@ export default function HomePage() {
                     }`}
                   >
                     {tradeSearching
-                      ? "거래 상대를 찾는 중…"
+                      ? "맞교 상대를 찾는 중…"
                       : receiving
                         ? "연결 중…"
-                        : "거래하기"}
+                        : "맞교하기"}
                   </button>
                   {!waitlistEnrolled ? (
                     <p className="mt-2 text-center text-xs text-amber-700">
-                      거래하기를 쓰려면 위에서 대기 명단을 먼저 켜 주세요.
+                      맞교하기를 쓰려면 위에서 대기 명단을 먼저 켜 주세요.
                     </p>
                   ) : null}
                   {needsDailyLink ? (
@@ -1276,7 +1288,7 @@ export default function HomePage() {
         <ReportNoticeModal count={reportNoticeCount} onDismiss={dismissReportNotice} />
       ) : null}
 
-      {user && entryGateAblyUrl ? (
+      {user && entryGateEnabled && entryGateAblyUrl ? (
         <EntryGateModal targetUrl={entryGateAblyUrl} userId={user.id} />
       ) : null}
     </>

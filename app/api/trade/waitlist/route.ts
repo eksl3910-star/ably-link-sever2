@@ -51,8 +51,8 @@ export async function POST(req: Request) {
     if (!rule.ok) {
       const msg =
         rule.kind === "permanent"
-          ? "계정 제재로 거래 대기 명단에 등록할 수 없습니다."
-          : "신고 누적으로 일정 시간 동안 거래 대기 명단을 이용할 수 없습니다.";
+          ? "계정 제재로 맞교 대기 명단에 등록할 수 없습니다."
+          : "신고 누적으로 일정 시간 동안 맞교 대기 명단을 이용할 수 없습니다.";
       return NextResponse.json({ ok: false, error: msg }, { status: 403 });
     }
   }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { setEntryGateAblyUrl } from "@/lib/database";
+import { getSettings, setEntryGateAblyUrl, setEntryGateEnabled } from "@/lib/database";
 import { ADMIN_PASS_ENVS } from "@/lib/constants";
 import { timingSafeCompare } from "@/lib/password";
 
@@ -14,7 +14,7 @@ function checkAdminPassword(input: string): boolean {
 }
 
 export async function POST(req: Request) {
-  let body: { password?: unknown; url?: unknown } = {};
+  let body: { password?: unknown; url?: unknown; enabled?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -22,24 +22,47 @@ export async function POST(req: Request) {
   }
 
   const password = typeof body.password === "string" ? body.password : "";
-  const rawUrl = typeof body.url === "string" ? body.url : "";
+  const rawUrl = typeof body.url === "string" ? body.url : undefined;
+  const enabledRaw = body.enabled;
 
   if (!checkAdminPassword(password)) {
     return NextResponse.json({ error: "관리자 비밀번호가 올바르지 않습니다." }, { status: 401 });
   }
 
+  const hasEnabled = typeof enabledRaw === "boolean";
+  const hasUrl = rawUrl !== undefined && rawUrl.trim() !== "";
+
+  if (!hasEnabled && !hasUrl) {
+    return NextResponse.json(
+      { error: "url(문자열) 또는 enabled(참/거짓) 중 하나 이상을 보내주세요." },
+      { status: 400 }
+    );
+  }
+
   try {
-    const result = await setEntryGateAblyUrl(rawUrl);
-    if (!result.ok) {
-      return NextResponse.json(
-        {
-          error:
-            "에이블리 링크(https://… 로 시작하고 a-bly.com 도메인)만 설정할 수 있습니다.",
-        },
-        { status: 400 }
-      );
+    if (hasEnabled) {
+      await setEntryGateEnabled(enabledRaw as boolean);
     }
-    return NextResponse.json({ ok: true, entryGateAblyUrl: result.url });
+
+    if (hasUrl) {
+      const result = await setEntryGateAblyUrl(rawUrl!.trim());
+      if (!result.ok) {
+        return NextResponse.json(
+          {
+            error:
+              "에이블리 링크(https://… 로 시작하고 a-bly.com 도메인)만 설정할 수 있습니다.",
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    const s = await getSettings();
+    return NextResponse.json({
+      ok: true,
+      entryGateAblyUrl: s.entryGateAblyUrl,
+      entryGateEnabled: s.entryGateEnabled,
+    });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "설정을 저장하지 못했습니다.";

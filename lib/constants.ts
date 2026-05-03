@@ -7,7 +7,7 @@ export const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 // 로그인 유지 미체크: 브라우저 닫으면 쿠키 삭제 + 서버 세션도 짧게
 export const SESSION_TTL_SHORT_MS = 24 * 60 * 60 * 1000;
 
-// Claim window for a received link (거래 창 · 서버 클레임 만료)
+// Claim window for a received link (맞교 창 · 서버 클레임 만료)
 export const CLAIM_WINDOW_MS = 15_000;
 
 // Only URLs ending with this hostname are accepted

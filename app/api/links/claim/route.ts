@@ -23,7 +23,7 @@ export async function POST() {
     if (!result.ok) {
       const extra =
         result.reason === "NO_USER_LINK"
-          ? "거래를 시작하려면 먼저 오늘의 에이블리 링크를 등록해 주세요. (메인 또는 마이페이지)"
+          ? "맞교를 시작하려면 먼저 오늘의 에이블리 링크를 등록해 주세요. (메인 또는 마이페이지)"
           : result.reason === "NO_TX_TABLE"
             ? "transactions 테이블이 없습니다. D1에 migrations/0005_users_transactions_reports.sql 을 적용해 주세요."
             : undefined;

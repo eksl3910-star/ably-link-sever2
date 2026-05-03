@@ -60,7 +60,7 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
       const res = await fetch(`/api/transactions/${encodeURIComponent(transactionId)}`);
       const j = (await res.json()) as TxPoll;
       if (!res.ok || !j.ok) {
-        setError(j.error ?? "거래 정보를 불러오지 못했습니다.");
+        setError(j.error ?? "맞교 정보를 불러오지 못했습니다.");
         return;
       }
       setTx(j);
@@ -107,7 +107,7 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           targetId: tx.peerUserId,
-          reason: reportReason.trim() || "거래 타이머 내 상대 링크 미클릭",
+          reason: reportReason.trim() || "맞교 타이머 내 상대 링크 미클릭",
         }),
       });
       if (!res.ok) {
@@ -146,7 +146,7 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold text-[#1a1a1a]">거래하기</h2>
+          <h2 className="text-lg font-bold text-[#1a1a1a]">맞교하기</h2>
           {canManualExit ? (
             <button
               type="button"
@@ -168,7 +168,7 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
         ) : null}
 
         <div className="mb-4 rounded-2xl border border-[#ececec] bg-[#fafafa] px-4 py-3 text-sm text-[#444]">
-          <p className="text-xs font-semibold text-gray-500">거래 상태</p>
+          <p className="text-xs font-semibold text-gray-500">맞교 상태</p>
           <p className="mt-1 font-semibold text-[#1a1a1a]">{phaseLabel}</p>
           <p className="mt-2 text-xs text-gray-500 leading-relaxed">
             나의 링크를 상대가 열고, 상대 링크를 내가 열면 완료됩니다. 양쪽이 모두 완료하면 이 창은

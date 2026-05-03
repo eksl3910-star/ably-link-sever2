@@ -260,6 +260,8 @@ export async function getSettings(): Promise<{
   touchedAt: number;
   maintenanceMessage: string;
   entryGateAblyUrl: string;
+  /** false면 메인 진입 게이트 팝업 비표시 */
+  entryGateEnabled: boolean;
 }> {
   const db = getDb();
   let maintenanceOn = false;
@@ -315,7 +317,38 @@ export async function getSettings(): Promise<{
     /* entry_gate_ably_url 컬럼 없음(마이그레이션 전) 등 */
   }
 
-  return { maintenanceOn, touchedAt, maintenanceMessage, entryGateAblyUrl };
+  let entryGateEnabled = true;
+  try {
+    const ge = await db
+      .prepare(`SELECT entry_gate_enabled AS e FROM settings WHERE key = 'global'`)
+      .first<{ e: number }>();
+    entryGateEnabled = Boolean(ge?.e ?? 1);
+  } catch {
+    /* entry_gate_enabled 컬럼 없음 */
+  }
+
+  return { maintenanceOn, touchedAt, maintenanceMessage, entryGateAblyUrl, entryGateEnabled };
+}
+
+export async function setEntryGateEnabled(enabled: boolean): Promise<void> {
+  const db = getDb();
+  const now = Date.now();
+  try {
+    await db
+      .prepare(
+        `UPDATE settings SET entry_gate_enabled = ?, touched_at = ? WHERE key = 'global'`
+      )
+      .bind(enabled ? 1 : 0, now)
+      .run();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no such column/i.test(msg) || /entry_gate_enabled/i.test(msg)) {
+      throw new Error(
+        "D1에 migrations/0010_settings_entry_gate_enabled.sql 을 적용해 주세요. (settings.entry_gate_enabled)"
+      );
+    }
+    throw err;
+  }
 }
 
 export async function setEntryGateAblyUrl(
@@ -511,7 +544,7 @@ export function parseAblyUrl(raw: string): string | null {
 }
 
 async function purgeExpiredClaims(db: D1Database, nowMs: number): Promise<void> {
-  /* 활성 거래(transactions)가 있는 링크는 만료로 되돌리지 않음 — 신고·15초 UI 동안 유지 */
+  /* 활성 맞교(transactions)가 있는 링크는 만료로 되돌리지 않음 — 신고·15초 UI 동안 유지 */
   await db
     .prepare(
       `UPDATE links
@@ -702,7 +735,7 @@ export function needsDailyLinkRegistration(lastLinkUpdate: number, nowMs: number
   return lastLinkUpdate < dayStart;
 }
 
-// ── Transactions (거래 창) ────────────────────────────────────────────────────
+// ── Transactions (맞교 창) ────────────────────────────────────────────────────
 
 export type TxRow = {
   id: string;
@@ -775,7 +808,7 @@ export async function recordPeerLinkClick(
     return { ok: false, reason: "NOT_FOUND" };
   }
 
-  /** 거래 창이 열려 있는 동안은 링크 큐용 15초 claim_deadline 으로 클릭을 막지 않음 */
+  /** 맞교 창이 열려 있는 동안은 링크 큐용 15초 claim_deadline 으로 클릭을 막지 않음 */
   const activeTxOnLink = await db
     .prepare(
       `SELECT 1 AS x FROM transactions WHERE link_id = ? AND COALESCE(status, '') != 'completed' LIMIT 1`

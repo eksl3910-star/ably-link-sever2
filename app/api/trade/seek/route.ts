@@ -27,9 +27,9 @@ export async function POST() {
           : result.reason === "NO_USER_LINK"
             ? "마이페이지에서 오늘의 에이블리 링크를 등록해 주세요."
             : result.reason === "TRADE_TEMP_BAN"
-              ? "신고 누적으로 12시간 동안 거래할 수 없습니다."
+              ? "신고 누적으로 12시간 동안 맞교할 수 없습니다."
               : result.reason === "PERMANENT_TRADE_BAN"
-                ? "계정 제재로 거래할 수 없습니다."
+                ? "계정 제재로 맞교할 수 없습니다."
                 : "서버 설정 오류입니다.";
       const status =
         result.reason === "TRADE_TEMP_BAN" || result.reason === "PERMANENT_TRADE_BAN"
@@ -57,7 +57,7 @@ export async function POST() {
     return NextResponse.json({ ok: false, error: "매칭 결과를 처리하지 못했습니다." }, { status: 500 });
   } catch (err) {
     const message =
-      err instanceof Error ? err.message : "거래 매칭 중 오류가 발생했습니다.";
+      err instanceof Error ? err.message : "맞교 매칭 중 오류가 발생했습니다.";
     return NextResponse.json({ ok: false, error: message }, { status: 500 });
   }
 }
