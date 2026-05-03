@@ -27,6 +27,7 @@ type Props = {
 };
 
 const POLL_MS = 1200;
+const REPORT_WINDOW_MS = 15_000;
 
 export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props) {
   const closeWithReturn = useCallback(() => {
@@ -46,6 +47,13 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
   const [reportBusy, setReportBusy] = useState(false);
   const [reportDone, setReportDone] = useState(false);
   const settledRef = useRef(false);
+
+  /** 나가기 버튼·15초 경과 조건을 매 렌더마다 계산 */
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 400);
+    return () => window.clearInterval(id);
+  }, []);
 
   const poll = useCallback(async () => {
     try {
@@ -71,19 +79,6 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
     const id = window.setInterval(() => void poll(), POLL_MS);
     return () => window.clearInterval(id);
   }, [poll]);
-
-  useEffect(() => {
-    const deadline = tx?.claimDeadline;
-    if (deadline == null) return;
-    const tick = () => {
-      if (Date.now() >= deadline) {
-        closeWithReturn();
-      }
-    };
-    const id = window.setInterval(tick, 400);
-    tick();
-    return () => window.clearInterval(id);
-  }, [tx?.claimDeadline, closeWithReturn]);
 
   async function handleOpenPeer() {
     if (!tx?.peerLink || busyOpen) return;
@@ -134,27 +129,36 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
         : "대기 중";
 
   const secondsLeft =
-    tx?.createdAt != null ? Math.max(0, 15 - Math.floor((Date.now() - tx.createdAt) / 1000)) : null;
+    tx?.createdAt != null ? Math.max(0, 15 - Math.floor((nowMs - tx.createdAt) / 1000)) : null;
+
+  const timerExpired =
+    tx?.createdAt != null ? nowMs - tx.createdAt >= REPORT_WINDOW_MS : false;
+
+  /** 상대 링크를 연 뒤 15초가 지나야 나가기 가능 (미오픈 시 버튼 없음) */
+  const canManualExit = Boolean(
+    tx && timerExpired && tx.iClickedPeerLink && tx.phase !== "done"
+  );
 
   return (
-    <div
-      className="fixed inset-0 z-[70] flex items-end justify-center bg-black/50 als-backdrop-enter md:items-center md:p-6"
-      onClick={(e) => e.target === e.currentTarget && closeWithReturn()}
-    >
+    <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/50 als-backdrop-enter md:items-center md:p-6">
       <div
         className="als-modal-enter w-full max-w-[480px] max-h-[90vh] overflow-y-auto rounded-t-3xl bg-white p-6 pb-9 shadow-2xl md:rounded-3xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between gap-3">
           <h2 className="text-lg font-bold text-[#1a1a1a]">거래하기</h2>
-          <button
-            type="button"
-            onClick={() => closeWithReturn()}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#f5f5f5] text-[#666] transition hover:bg-[#ebebeb]"
-            aria-label="닫기"
-          >
-            ✕
-          </button>
+          {canManualExit ? (
+            <button
+              type="button"
+              onClick={() => closeWithReturn()}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#f5f5f5] text-[#666] transition hover:bg-[#ebebeb]"
+              aria-label="나가기"
+            >
+              ✕
+            </button>
+          ) : (
+            <span className="h-9 w-9 shrink-0" aria-hidden />
+          )}
         </div>
 
         {error ? (
@@ -167,8 +171,8 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
           <p className="text-xs font-semibold text-gray-500">거래 상태</p>
           <p className="mt-1 font-semibold text-[#1a1a1a]">{phaseLabel}</p>
           <p className="mt-2 text-xs text-gray-500 leading-relaxed">
-            나의 링크를 상대가 열고, 상대 링크를 내가 열면 완료됩니다. 창을 닫으면 반납 규칙이 그대로
-            적용돼요.
+            나의 링크를 상대가 열고, 상대 링크를 내가 열면 완료됩니다. 양쪽이 모두 완료하면 이 창은
+            자동으로 닫혀요.
           </p>
         </div>
 
@@ -207,17 +211,25 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
           {busyOpen ? "처리 중…" : "상대 링크 열기 (에이블리)"}
         </button>
 
-        <button
-          type="button"
-          onClick={() => closeWithReturn()}
-          className="h-10 w-full rounded-xl bg-[#f5f5f5] text-sm text-gray-600 hover:bg-[#ebebeb]"
-        >
-          반납하고 닫기
-        </button>
+        {canManualExit ? (
+          <button
+            type="button"
+            onClick={() => closeWithReturn()}
+            className="h-11 w-full rounded-xl border border-[#e5e7eb] bg-white text-sm font-semibold text-[#1a1a1a] hover:bg-gray-50"
+          >
+            나가기 (거래 반납)
+          </button>
+        ) : timerExpired && tx && !tx.iClickedPeerLink && tx.phase !== "done" ? (
+          <p className="mt-1 text-center text-xs text-amber-800">
+            상대 링크를 아직 열지 않았어요. 열면 나가기 버튼이 표시됩니다.
+          </p>
+        ) : null}
 
         {tx?.showReport ? (
           <div className="mt-5 rounded-2xl border border-[#ffe4a0] bg-[#fffaf0] p-4">
-            <p className="text-sm font-semibold text-[#b07800]">15초 내 상대 링크 클릭이 감지되지 않았어요</p>
+            <p className="text-sm font-semibold text-[#b07800]">
+              15초 내 상대 링크 클릭이 감지되지 않았어요
+            </p>
             <p className="mt-2 text-xs text-[#666] leading-relaxed">
               문제가 지속되면 신고할 수 있어요. 신고가 누적되면 이용이 제한될 수 있습니다.
             </p>
@@ -237,16 +249,6 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
               {reportDone ? "신고 접수됨" : reportBusy ? "전송 중…" : "신고하기"}
             </button>
           </div>
-        ) : null}
-
-        {tx?.phase === "done" ? (
-          <button
-            type="button"
-            onClick={() => closeWithReturn()}
-            className="mt-4 h-11 w-full rounded-xl bg-[#1a1a1a] text-sm font-semibold text-white"
-          >
-            닫기
-          </button>
         ) : null}
       </div>
     </div>

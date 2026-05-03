@@ -446,6 +446,7 @@ export function parseAblyUrl(raw: string): string | null {
 }
 
 async function purgeExpiredClaims(db: D1Database, nowMs: number): Promise<void> {
+  /* 활성 거래(transactions)가 있는 링크는 만료로 되돌리지 않음 — 신고·15초 UI 동안 유지 */
   await db
     .prepare(
       `UPDATE links
@@ -453,9 +454,21 @@ async function purgeExpiredClaims(db: D1Database, nowMs: number): Promise<void> 
            claim_deadline = NULL, claimed_at = NULL, updated_at = ?
        WHERE state = 'claimed'
          AND claim_deadline IS NOT NULL
-         AND claim_deadline < ?`
+         AND claim_deadline < ?
+         AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.link_id = links.id)`
     )
     .bind(nowMs, nowMs)
+    .run();
+}
+
+async function recordMatchedPair(db: D1Database, userA: string, userB: string, nowMs: number): Promise<void> {
+  const low = userA < userB ? userA : userB;
+  const high = userA < userB ? userB : userA;
+  await db
+    .prepare(
+      `INSERT OR REPLACE INTO trade_pair_history (user_low, user_high, matched_at) VALUES (?, ?, ?)`
+    )
+    .bind(low, high, nowMs)
     .run();
 }
 
@@ -931,6 +944,7 @@ export async function acquireLink(takerId: string): Promise<
       )
       .bind(txId, candidate.id, candidate.ownerId, takerId, candidate.url, takerLink, now)
       .run();
+    await recordMatchedPair(db, candidate.ownerId, takerId, now);
   } catch {
     await db
       .prepare(
@@ -1100,9 +1114,17 @@ export async function seekTradePartner(userId: string): Promise<SeekTradeResult>
 
   const peerRow = await db
     .prepare(
-      `SELECT user_id AS peerId FROM trade_match_queue WHERE user_id != ? ORDER BY requested_at ASC LIMIT 1`
+      `SELECT m.user_id AS peerId
+       FROM trade_match_queue m
+       LEFT JOIN trade_pair_history h
+         ON h.user_low = (CASE WHEN ? < m.user_id THEN ? ELSE m.user_id END)
+        AND h.user_high = (CASE WHEN ? < m.user_id THEN m.user_id ELSE ? END)
+       WHERE m.user_id != ?
+         AND h.user_low IS NULL
+       ORDER BY m.requested_at ASC
+       LIMIT 1`
     )
-    .bind(userId)
+    .bind(userId, userId, userId, userId, userId)
     .first<{ peerId: string }>();
 
   if (peerRow) {
@@ -1157,6 +1179,7 @@ export async function seekTradePartner(userId: string): Promise<SeekTradeResult>
         )
         .bind(txId, linkId, peerId, userId, peerLink, myLink, now)
         .run();
+      await recordMatchedPair(db, peerId, userId, now);
     } catch {
       try {
         await db.prepare(`DELETE FROM receipts WHERE link_id = ?`).bind(linkId).run();
