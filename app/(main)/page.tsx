@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { DEFAULT_ENTRY_GATE_ABLY_URL } from "@/lib/constants";
 import { getOrCreateClientId } from "@/lib/client-id";
 import { DailyLinkModal } from "./DailyLinkModal";
+import { EntryGateModal } from "./EntryGateModal";
 import { TradeModal } from "./TradeModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -517,6 +519,8 @@ export default function HomePage() {
   const [accountControlsLocked, setAccountControlsLocked] = useState(false);
   /** 신고 누적 알림 — 숫자가 있으면 해당 횟수로 팝업 표시 */
   const [reportNoticeCount, setReportNoticeCount] = useState<number | null>(null);
+  /** 메인 진입 게이트용 에이블리 링크 (관리자 설정) */
+  const [entryGateAblyUrl, setEntryGateAblyUrl] = useState<string>(DEFAULT_ENTRY_GATE_ABLY_URL);
 
   // ── Load current user ───────────────────────────────────────────────────────
 
@@ -526,8 +530,14 @@ export default function HomePage() {
     (async () => {
       try {
         const sRes = await fetch("/api/settings");
-        const s = (await sRes.json()) as { maintenanceOn?: boolean };
+        const s = (await sRes.json()) as {
+          maintenanceOn?: boolean;
+          entryGateAblyUrl?: string;
+        };
         if (cancelled) return;
+        if (typeof s.entryGateAblyUrl === "string" && s.entryGateAblyUrl.trim()) {
+          setEntryGateAblyUrl(s.entryGateAblyUrl);
+        }
         if (s.maintenanceOn) {
           router.replace("/maintenance");
           setAuthLoading(false);
@@ -650,6 +660,14 @@ export default function HomePage() {
     loadAnnouncements();
     void checkReportNotice();
     void refreshAccountFlags();
+    void fetch("/api/settings")
+      .then((r) => r.json() as Promise<{ entryGateAblyUrl?: string }>)
+      .then((s) => {
+        if (typeof s.entryGateAblyUrl === "string" && s.entryGateAblyUrl.trim()) {
+          setEntryGateAblyUrl(s.entryGateAblyUrl);
+        }
+      })
+      .catch(() => null);
   }, [loadWaitlistStats, loadAnnouncements, checkReportNotice, refreshAccountFlags]);
 
   async function handleRefreshWaitlistCount() {
@@ -923,7 +941,7 @@ export default function HomePage() {
                 isDesktopLayout ? "text-base sm:text-lg" : "text-base"
               }`}
             >
-              에이블리 링크 교환
+              에이블리 쇼핑 지원금 교환
             </h1>
             <div className="flex items-center gap-1.5 sm:gap-2">
               <span
@@ -1256,6 +1274,10 @@ export default function HomePage() {
 
       {reportNoticeCount != null ? (
         <ReportNoticeModal count={reportNoticeCount} onDismiss={dismissReportNotice} />
+      ) : null}
+
+      {user && entryGateAblyUrl ? (
+        <EntryGateModal targetUrl={entryGateAblyUrl} />
       ) : null}
     </>
   );

@@ -11,6 +11,7 @@ export async function GET() {
         maintenanceOn: settings.maintenanceOn,
         touchedAt: settings.touchedAt,
         maintenanceMessage: settings.maintenanceMessage,
+        entryGateAblyUrl: settings.entryGateAblyUrl,
       },
       {
         headers: {

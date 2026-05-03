@@ -13,6 +13,9 @@ export const CLAIM_WINDOW_MS = 15_000;
 // Only URLs ending with this hostname are accepted
 export const ABLY_HOSTNAME = "a-bly.com";
 
+/** 메인 진입 게이트 버튼 기본 링크 (DB 마이그레이션 전·실패 시 사용) */
+export const DEFAULT_ENTRY_GATE_ABLY_URL = "https://applink.a-bly.com/p25459";
+
 // PBKDF2 iteration count
 export const PBKDF2_ITERATIONS = 100_000;
 

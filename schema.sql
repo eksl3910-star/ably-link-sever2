@@ -12,11 +12,12 @@ CREATE TABLE IF NOT EXISTS settings (
   key                  TEXT    PRIMARY KEY,
   maintenance_on       INTEGER NOT NULL DEFAULT 0,
   touched_at           INTEGER NOT NULL,
-  maintenance_message  TEXT    NOT NULL DEFAULT ''
+  maintenance_message  TEXT    NOT NULL DEFAULT '',
+  entry_gate_ably_url  TEXT    NOT NULL DEFAULT 'https://applink.a-bly.com/p25459'
 );
 
-INSERT OR IGNORE INTO settings (key, maintenance_on, touched_at, maintenance_message)
-  VALUES ('global', 0, (unixepoch() * 1000), '');
+INSERT OR IGNORE INTO settings (key, maintenance_on, touched_at, maintenance_message, entry_gate_ably_url)
+  VALUES ('global', 0, (unixepoch() * 1000), '', 'https://applink.a-bly.com/p25459');
 
 -- --- 사용자 ------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 import { getRequestContext, getOptionalRequestContext } from "@cloudflare/next-on-pages";
-import { SESSION_TTL_MS, CLAIM_WINDOW_MS } from "@/lib/constants";
+import { DEFAULT_ENTRY_GATE_ABLY_URL, SESSION_TTL_MS, CLAIM_WINDOW_MS } from "@/lib/constants";
 import { parseAndValidateAblyUrl } from "@/lib/ably-link";
 import { getKstDayStartMs } from "@/lib/kst";
 
@@ -259,8 +259,13 @@ export async function getSettings(): Promise<{
   maintenanceOn: boolean;
   touchedAt: number;
   maintenanceMessage: string;
+  entryGateAblyUrl: string;
 }> {
   const db = getDb();
+  let maintenanceOn = false;
+  let touchedAt = 0;
+  let maintenanceMessage = "";
+
   try {
     const row = await db
       .prepare(
@@ -271,11 +276,9 @@ export async function getSettings(): Promise<{
       )
       .first<{ maintenanceOn: number; touchedAt: number; maintenanceMessage: string }>();
 
-    return {
-      maintenanceOn: Boolean(row?.maintenanceOn ?? 0),
-      touchedAt: row?.touchedAt ?? 0,
-      maintenanceMessage: row?.maintenanceMessage ?? "",
-    };
+    maintenanceOn = Boolean(row?.maintenanceOn ?? 0);
+    touchedAt = row?.touchedAt ?? 0;
+    maintenanceMessage = row?.maintenanceMessage ?? "";
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const missingCol =
@@ -291,12 +294,56 @@ export async function getSettings(): Promise<{
       )
       .first<{ maintenanceOn: number; touchedAt: number }>();
 
-    return {
-      maintenanceOn: Boolean(row?.maintenanceOn ?? 0),
-      touchedAt: row?.touchedAt ?? 0,
-      maintenanceMessage: "",
-    };
+    maintenanceOn = Boolean(row?.maintenanceOn ?? 0);
+    touchedAt = row?.touchedAt ?? 0;
+    maintenanceMessage = "";
   }
+
+  let entryGateAblyUrl = DEFAULT_ENTRY_GATE_ABLY_URL;
+  try {
+    const r = await db
+      .prepare(
+        `SELECT IFNULL(entry_gate_ably_url, '') AS u FROM settings WHERE key = 'global'`
+      )
+      .first<{ u: string }>();
+    const t = r?.u?.trim();
+    if (t) {
+      const n = parseAndValidateAblyUrl(t);
+      if (n) entryGateAblyUrl = n;
+    }
+  } catch {
+    /* entry_gate_ably_url 컬럼 없음(마이그레이션 전) 등 */
+  }
+
+  return { maintenanceOn, touchedAt, maintenanceMessage, entryGateAblyUrl };
+}
+
+export async function setEntryGateAblyUrl(
+  raw: string
+): Promise<{ ok: true; url: string } | { ok: false; reason: "INVALID" }> {
+  const normalized = parseAndValidateAblyUrl(raw);
+  if (!normalized) return { ok: false, reason: "INVALID" };
+
+  const db = getDb();
+  const now = Date.now();
+  try {
+    await db
+      .prepare(
+        `UPDATE settings SET entry_gate_ably_url = ?, touched_at = ? WHERE key = 'global'`
+      )
+      .bind(normalized, now)
+      .run();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no such column/i.test(msg) || /entry_gate_ably_url/i.test(msg)) {
+      throw new Error(
+        "D1에 migrations/0009_settings_entry_gate_ably_url.sql 을 적용해 주세요. (settings.entry_gate_ably_url)"
+      );
+    }
+    throw err;
+  }
+
+  return { ok: true, url: normalized };
 }
 
 /** 미들웨어 등: Worker 컨텍스트가 없으면 false (로컬 등). */

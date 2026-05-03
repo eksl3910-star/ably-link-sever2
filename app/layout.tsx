@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "에이블리 링크 교환",
-  description: "에이블리 링크를 서로 교환해요",
+  title: "에이블리 쇼핑 지원금 교환",
+  description: "에이블리 쇼핑 지원금을 서로 교환해요",
 };
 
 export default function RootLayout({

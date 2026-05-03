@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 
-type Settings = { maintenanceOn: boolean; touchedAt: number; maintenanceMessage: string };
+type Settings = {
+  maintenanceOn: boolean;
+  touchedAt: number;
+  maintenanceMessage: string;
+  entryGateAblyUrl: string;
+};
 type Metrics = {
   totalUsers: number;
   newUsersToday: number;
@@ -66,6 +71,7 @@ export default function AdminPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editBody, setEditBody] = useState("");
+  const [entryGateInput, setEntryGateInput] = useState("");
 
   // Load current settings
   useEffect(() => {
@@ -93,8 +99,17 @@ export default function AdminPage() {
           maintenanceOn: Boolean(d.maintenanceOn),
           touchedAt: d.touchedAt ?? 0,
           maintenanceMessage: typeof d.maintenanceMessage === "string" ? d.maintenanceMessage : "",
+          entryGateAblyUrl:
+            typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()
+              ? d.entryGateAblyUrl
+              : "https://applink.a-bly.com/p25459",
         });
         if (typeof d.maintenanceMessage === "string") setMaintenanceMsg(d.maintenanceMessage);
+        if (typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()) {
+          setEntryGateInput(d.entryGateAblyUrl);
+        } else {
+          setEntryGateInput("https://applink.a-bly.com/p25459");
+        }
       } catch {
         setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
       } finally {
@@ -139,12 +154,17 @@ export default function AdminPage() {
         return;
       }
 
-      setSettings({
-        maintenanceOn: Boolean(data.maintenanceOn),
-        touchedAt: data.touchedAt ?? 0,
-        maintenanceMessage:
-          typeof data.maintenanceMessage === "string" ? data.maintenanceMessage : maintenanceMsg,
-      });
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              maintenanceOn: Boolean(data.maintenanceOn),
+              touchedAt: data.touchedAt ?? prev.touchedAt,
+              maintenanceMessage:
+                typeof data.maintenanceMessage === "string" ? data.maintenanceMessage : maintenanceMsg,
+            }
+          : null
+      );
       if (typeof data.maintenanceMessage === "string") setMaintenanceMsg(data.maintenanceMessage);
       setAlert({
         message: next ? "점검 모드가 활성화됐습니다." : "점검 모드가 해제됐습니다.",
@@ -198,6 +218,46 @@ export default function AdminPage() {
       );
       if (typeof data.maintenanceMessage === "string") setMaintenanceMsg(data.maintenanceMessage);
       setAlert({ message: "점검 안내 문구를 저장했습니다.", type: "success" });
+    } catch {
+      setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEntryGateUrl() {
+    if (busy) return;
+    setAlert(null);
+    if (!password) {
+      setAlert({ message: "관리자 비밀번호를 입력해주세요.", type: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/entry-gate-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password, url: entryGateInput }),
+      });
+      const { data } = await readResponseJson<{
+        ok?: boolean;
+        error?: string;
+        entryGateAblyUrl?: string;
+      }>(res);
+      if (!data || !res.ok || !data.ok) {
+        setAlert({
+          message: data?.error ?? `저장 실패 (HTTP ${res.status})`,
+          type: "error",
+        });
+        return;
+      }
+      if (typeof data.entryGateAblyUrl === "string") {
+        setEntryGateInput(data.entryGateAblyUrl);
+        setSettings((prev) =>
+          prev ? { ...prev, entryGateAblyUrl: data.entryGateAblyUrl! } : prev
+        );
+      }
+      setAlert({ message: "메인 진입 에이블리 링크를 저장했습니다.", type: "success" });
     } catch {
       setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
     } finally {
@@ -473,6 +533,30 @@ export default function AdminPage() {
             className="mt-3 h-10 w-full rounded-xl border border-[#e7e9ee] bg-white text-sm font-bold text-[#1f2430] disabled:opacity-50"
           >
             안내 문구만 저장
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-[#e7e9ee] bg-[#fbfbfd] p-4">
+          <p className="text-sm font-semibold text-[#1f2430]">메인 진입 게이트 링크</p>
+          <p className="mt-1 text-xs text-[#7c8394]">
+            로그인 후 메인에서 사용자가 눌러야 하는 「에이블리 수익성 링크」입니다. HTTPS이며 a-bly.com
+            도메인만 허용됩니다.
+          </p>
+          <input
+            type="url"
+            value={entryGateInput}
+            onChange={(e) => setEntryGateInput(e.target.value)}
+            placeholder="https://applink.a-bly.com/..."
+            className="mt-3 h-11 w-full rounded-xl border border-[#d9dde6] bg-white px-3 text-sm text-[#1f2430] outline-none placeholder:text-[#9aa3b2] focus:border-[#111]"
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            disabled={loading || busy}
+            onClick={() => void saveEntryGateUrl()}
+            className="mt-3 h-10 w-full rounded-xl bg-[#111] text-sm font-bold text-white disabled:opacity-50"
+          >
+            링크 저장
           </button>
         </div>
 
