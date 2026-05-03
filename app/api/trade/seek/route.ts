@@ -26,8 +26,16 @@ export async function POST() {
           ? "먼저 대기 명단에 등록해 주세요."
           : result.reason === "NO_USER_LINK"
             ? "마이페이지에서 오늘의 에이블리 링크를 등록해 주세요."
-            : "서버 설정 오류입니다.";
-      return NextResponse.json({ ok: false, reason: result.reason, error: msg }, { status: 400 });
+            : result.reason === "TRADE_TEMP_BAN"
+              ? "신고 누적으로 12시간 동안 거래할 수 없습니다."
+              : result.reason === "PERMANENT_TRADE_BAN"
+                ? "계정 제재로 거래할 수 없습니다."
+                : "서버 설정 오류입니다.";
+      const status =
+        result.reason === "TRADE_TEMP_BAN" || result.reason === "PERMANENT_TRADE_BAN"
+          ? 403
+          : 400;
+      return NextResponse.json({ ok: false, reason: result.reason, error: msg }, { status });
     }
 
     if ("waiting" in result && result.waiting) {

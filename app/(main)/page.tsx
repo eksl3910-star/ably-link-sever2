@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getOrCreateClientId } from "@/lib/client-id";
 import { DailyLinkModal } from "./DailyLinkModal";
 import { TradeModal } from "./TradeModal";
 
@@ -50,6 +51,33 @@ const CONTACT_IG_ORIGINAL = "https://www.instagram.com/solitunnn/";
 const CONTACT_IG_CURRENT = "https://www.instagram.com/riikuuu0/";
 
 const LAYOUT_STORAGE_KEY = "als_layout_mode";
+/** 탭/창을 떠난 채로 이 시간이 지나면 대기 명단 자동 해제 */
+const WAITLIST_AUTO_LEAVE_MS = 30_000;
+
+const REPORT_ACK_STORAGE_PREFIX = "als_report_ack_";
+function reportAckStorageKey(userId: string) {
+  return `${REPORT_ACK_STORAGE_PREFIX}${userId}`;
+}
+function readReportAckCount(userId: string): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const v = localStorage.getItem(reportAckStorageKey(userId));
+    if (v == null) return 0;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function writeReportAckCount(userId: string, count: number) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(reportAckStorageKey(userId), String(count));
+  } catch {
+    /* ignore */
+  }
+}
+
 type LayoutPref = "auto" | "mobile" | "desktop";
 
 function readStoredLayoutPref(): LayoutPref {
@@ -57,6 +85,58 @@ function readStoredLayoutPref(): LayoutPref {
   const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
   if (raw === "mobile" || raw === "desktop" || raw === "auto") return raw;
   return "auto";
+}
+
+function IconRefresh({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ReportNoticeModal({
+  count,
+  onDismiss,
+}: {
+  count: number;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[75] flex items-end justify-center bg-black/50 als-backdrop-enter md:items-center md:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="report-notice-title"
+      onClick={(e) => e.target === e.currentTarget && onDismiss()}
+    >
+      <div
+        className="als-modal-enter w-full max-w-[400px] rounded-t-3xl bg-white p-6 pb-8 shadow-2xl md:rounded-3xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p id="report-notice-title" className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+          안내
+        </p>
+        <p className="mt-3 text-center text-2xl font-bold text-[#c0392b]">신고 누적 {count}회</p>
+        <p className="mt-3 text-center text-sm leading-relaxed text-[#555]">
+          신고가 누적되면 거래 제한 등 제재가 적용될 수 있어요. 원활한 거래를 위해 규칙을 지켜 주세요.
+        </p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="mt-6 h-12 w-full rounded-xl bg-[#111] text-base font-semibold text-white transition hover:opacity-95 active:scale-[0.98]"
+        >
+          확인
+        </button>
+      </div>
+    </div>
+  );
 }
 
 // ── Contact / credits popup ───────────────────────────────────────────────────
@@ -410,6 +490,7 @@ export default function HomePage() {
   const [waitlistCount, setWaitlistCount] = useState(0);
   const [waitlistEnrolled, setWaitlistEnrolled] = useState(false);
   const [waitlistToggleBusy, setWaitlistToggleBusy] = useState(false);
+  const [waitlistCountRefreshing, setWaitlistCountRefreshing] = useState(false);
   const [tradeSearching, setTradeSearching] = useState(false);
   const seekAbortRef = useRef(false);
 
@@ -432,6 +513,8 @@ export default function HomePage() {
   const [showContact, setShowContact] = useState(false);
   const [layoutPref, setLayoutPref] = useState<LayoutPref>("auto");
   const [mediaDesktop, setMediaDesktop] = useState(false);
+  /** 신고 누적 알림 — 숫자가 있으면 해당 횟수로 팝업 표시 */
+  const [reportNoticeCount, setReportNoticeCount] = useState<number | null>(null);
 
   // ── Load current user ───────────────────────────────────────────────────────
 
@@ -488,18 +571,30 @@ export default function HomePage() {
     };
   }, [router]);
 
+  useEffect(() => {
+    if (authLoading || !user) return;
+    const cid = getOrCreateClientId();
+    if (!cid) return;
+    void fetch("/api/auth/bind-client", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clientId: cid }),
+    }).catch(() => null);
+  }, [authLoading, user]);
+
   // ── Load stats ──────────────────────────────────────────────────────────────
 
-  const loadWaitlistStats = useCallback(() => {
-    fetch("/api/trade/waitlist")
-      .then((r) => r.json() as Promise<{ ok?: boolean; count?: number; enrolled?: boolean }>)
-      .then((d) => {
-        if (d.ok) {
-          setWaitlistCount(d.count ?? 0);
-          setWaitlistEnrolled(Boolean(d.enrolled));
-        }
-      })
-      .catch(() => null);
+  const loadWaitlistStats = useCallback(async () => {
+    try {
+      const r = await fetch("/api/trade/waitlist");
+      const d = (await r.json()) as { ok?: boolean; count?: number; enrolled?: boolean };
+      if (d.ok) {
+        setWaitlistCount(d.count ?? 0);
+        setWaitlistEnrolled(Boolean(d.enrolled));
+      }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const loadAnnouncements = useCallback(() => {
@@ -511,10 +606,41 @@ export default function HomePage() {
       .catch(() => null);
   }, []);
 
+  const checkReportNotice = useCallback(async () => {
+    const uid = user?.id;
+    if (!uid) return;
+    try {
+      const r = await fetch("/api/user/reports-received");
+      const d = (await r.json()) as { ok?: boolean; count?: number };
+      if (!d.ok || typeof d.count !== "number") return;
+      const total = d.count;
+      const ack = readReportAckCount(uid);
+      if (total > ack) {
+        setReportNoticeCount((prev): number | null => {
+          if (prev === total) return prev;
+          return total;
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [user?.id]);
+
   const refreshDashboard = useCallback(() => {
-    loadWaitlistStats();
+    void loadWaitlistStats();
     loadAnnouncements();
-  }, [loadWaitlistStats, loadAnnouncements]);
+    void checkReportNotice();
+  }, [loadWaitlistStats, loadAnnouncements, checkReportNotice]);
+
+  async function handleRefreshWaitlistCount() {
+    if (waitlistCountRefreshing) return;
+    setWaitlistCountRefreshing(true);
+    try {
+      await loadWaitlistStats();
+    } finally {
+      setWaitlistCountRefreshing(false);
+    }
+  }
 
   useEffect(() => {
     if (!authLoading && user) {
@@ -545,6 +671,56 @@ export default function HomePage() {
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [authLoading, user, refreshDashboard]);
+
+  /** 대기 명단 켜 둔 채 30초 이상 탭/창을 벗어나 있으면 자동 해제 */
+  useEffect(() => {
+    if (authLoading || !user || !waitlistEnrolled) return;
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    function clearLeaveTimer() {
+      if (timeoutId != null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+    }
+
+    function scheduleAutoLeave() {
+      clearLeaveTimer();
+      timeoutId = setTimeout(() => {
+        timeoutId = null;
+        if (document.visibilityState !== "visible") {
+          void fetch("/api/trade/waitlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enrolled: false }),
+          })
+            .then((r) => r.json() as Promise<{ ok?: boolean; count?: number; enrolled?: boolean }>)
+            .then((d) => {
+              if (d.ok) {
+                setWaitlistCount(d.count ?? 0);
+                setWaitlistEnrolled(Boolean(d.enrolled));
+              }
+            })
+            .catch(() => null);
+        }
+      }, WAITLIST_AUTO_LEAVE_MS);
+    }
+
+    function onVisibility() {
+      if (document.visibilityState === "hidden") {
+        scheduleAutoLeave();
+      } else {
+        clearLeaveTimer();
+      }
+    }
+
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearLeaveTimer();
+    };
+  }, [authLoading, user, waitlistEnrolled]);
 
   useEffect(() => {
     setLayoutPref(readStoredLayoutPref());
@@ -632,7 +808,11 @@ export default function HomePage() {
               ? "먼저 대기 명단에 등록해 주세요."
               : data.reason === "NO_USER_LINK"
                 ? (data.error ?? "마이페이지에서 에이블리 링크를 등록해 주세요.")
-                : (data.error ?? "거래를 시작할 수 없어요.");
+                : data.reason === "TRADE_TEMP_BAN"
+                  ? (data.error ?? "신고 누적으로 일정 시간 동안 거래할 수 없습니다.")
+                  : data.reason === "PERMANENT_TRADE_BAN"
+                    ? (data.error ?? "계정 제재로 거래할 수 없습니다.")
+                    : (data.error ?? "거래를 시작할 수 없어요.");
           setReceiveAlert({ message: msg, type: "warning" });
           return;
         }
@@ -670,6 +850,13 @@ export default function HomePage() {
     setTradeSearching(false);
     setReceiveAlert(null);
     refreshDashboard();
+  }
+
+  function dismissReportNotice() {
+    if (user && reportNoticeCount != null) {
+      writeReportAckCount(user.id, reportNoticeCount);
+    }
+    setReportNoticeCount(null);
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -871,9 +1058,9 @@ export default function HomePage() {
                 ) : null}
               </div>
 
-              {/* Stats (자동 새로고침: 주기·탭 복귀 시) */}
+              {/* Stats: 새로고침 버튼 + 주기·탭 복귀 시 자동 갱신 */}
               <div
-                className={`flex w-full items-center justify-center gap-2 rounded-2xl border border-[#ececec] bg-white shadow-sm ${
+                className={`flex w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-2xl border border-[#ececec] bg-white shadow-sm ${
                   isDesktopLayout ? "p-5 lg:p-6" : "p-4"
                 }`}
               >
@@ -885,6 +1072,17 @@ export default function HomePage() {
                 <span className={`text-gray-500 ${isDesktopLayout ? "text-base" : "text-sm"}`}>
                   명의 거래 상대 대기 중
                 </span>
+                <button
+                  type="button"
+                  onClick={() => void handleRefreshWaitlistCount()}
+                  disabled={waitlistCountRefreshing}
+                  aria-label="대기 인원 새로고침"
+                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#ececec] bg-[#fafafa] text-gray-500 transition hover:bg-gray-100 hover:text-[#1a1a1a] disabled:opacity-50 ${
+                    waitlistCountRefreshing ? "[&_svg]:animate-spin" : ""
+                  }`}
+                >
+                  <IconRefresh className="h-4 w-4" />
+                </button>
               </div>
 
               {/* 대기 명단 */}
@@ -912,7 +1110,8 @@ export default function HomePage() {
                       : "대기 명단 등록하기"}
                 </button>
                 <p className="mt-2 text-center text-xs leading-relaxed text-gray-400">
-                  등록해야 위 숫자에 포함되고, 거래하기를 쓸 수 있어요.
+                  등록해야 위 숫자에 포함되고, 거래하기를 쓸 수 있어요. 다른 화면으로 30초 이상
+                  머물면 대기는 자동으로 꺼져요.
                 </p>
               </div>
 
@@ -1022,6 +1221,10 @@ export default function HomePage() {
           onClose={() => resetTradeUi()}
           onSettled={() => resetTradeUi()}
         />
+      ) : null}
+
+      {reportNoticeCount != null ? (
+        <ReportNoticeModal count={reportNoticeCount} onDismiss={dismissReportNotice} />
       ) : null}
     </>
   );

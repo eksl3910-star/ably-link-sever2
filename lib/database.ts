@@ -146,7 +146,7 @@ export async function insertUser(
 }
 
 export async function findUserByNickname(nickname: string): Promise<
-  | (User & { pwHash: string; pwSalt: string })
+  | (User & { pwHash: string; pwSalt: string; accountStatus: string })
   | null
 > {
   const db = getDb();
@@ -155,25 +155,34 @@ export async function findUserByNickname(nickname: string): Promise<
   if (!normalized) return null;
   return db
     .prepare(
-      `SELECT id, ${col} AS nickname, pw_hash AS pwHash, pw_salt AS pwSalt, joined_at AS joinedAt
+      `SELECT id, ${col} AS nickname, pw_hash AS pwHash, pw_salt AS pwSalt, joined_at AS joinedAt,
+              COALESCE(account_status, 'active') AS accountStatus
        FROM users WHERE ${col} = ?`
     )
     .bind(normalized)
-    .first<User & { pwHash: string; pwSalt: string }>();
+    .first<User & { pwHash: string; pwSalt: string; accountStatus: string }>();
 }
 
 export async function findUserById(userId: string): Promise<User | null> {
   const db = getDb();
   if (!userId) return null;
   const col = await getUsersLoginColumn(db);
-  return db
-    .prepare(`SELECT id, ${col} AS nickname, joined_at AS joinedAt FROM users WHERE id = ?`)
+  const row = await db
+    .prepare(
+      `SELECT id, ${col} AS nickname, joined_at AS joinedAt,
+              COALESCE(account_status, 'active') AS accountStatus
+       FROM users WHERE id = ?`
+    )
     .bind(userId)
-    .first<User>();
+    .first<User & { accountStatus: string }>();
+  if (!row) return null;
+  if (row.accountStatus === "permanent_ban") return null;
+  return { id: row.id, nickname: row.nickname, joinedAt: row.joinedAt };
 }
 
 export async function removeUserAndData(userId: string): Promise<void> {
   const db = getDb();
+  await db.prepare(`DELETE FROM user_client_bindings WHERE user_id = ?`).bind(userId).run();
   await db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(userId).run();
   await db.prepare(`DELETE FROM reports WHERE reporter_id = ? OR target_id = ?`).bind(userId, userId).run();
   await db
@@ -762,6 +771,81 @@ export type TransactionClientView = {
   showReport: boolean;
 };
 
+/** 영구 정지 시 해당 계정에 바인딩된 브라우저 클라이언트 ID를 재가입 차단 목록에 넣음 */
+async function blockClientIdsLinkedToUser(
+  db: D1Database,
+  userId: string,
+  nowMs: number
+): Promise<void> {
+  const rows = await db
+    .prepare(`SELECT client_id AS cid FROM user_client_bindings WHERE user_id = ?`)
+    .bind(userId)
+    .all<{ cid: string }>();
+  for (const r of rows.results ?? []) {
+    await db
+      .prepare(
+        `INSERT OR IGNORE INTO blocked_client_ids (client_id, created_at, source_user_id)
+         VALUES (?, ?, ?)`
+      )
+      .bind(r.cid, nowMs, userId)
+      .run();
+  }
+}
+
+const UUID_RE =
+  /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
+
+export async function isClientIdBlocked(clientId: string): Promise<boolean> {
+  const trimmed = clientId.trim().toLowerCase();
+  if (!UUID_RE.test(trimmed)) return false;
+  const db = getDb();
+  const row = await db
+    .prepare(`SELECT 1 AS x FROM blocked_client_ids WHERE client_id = ?`)
+    .bind(trimmed)
+    .first<{ x: number }>();
+  return row != null;
+}
+
+export async function bindUserClientId(userId: string, clientId: string): Promise<void> {
+  const trimmed = clientId.trim().toLowerCase();
+  if (!UUID_RE.test(trimmed)) return;
+  const db = getDb();
+  const now = Date.now();
+  await db
+    .prepare(
+      `INSERT INTO user_client_bindings (user_id, client_id, bound_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(user_id, client_id) DO UPDATE SET bound_at = excluded.bound_at`
+    )
+    .bind(userId, trimmed, now)
+    .run();
+}
+
+export type TradeRestriction =
+  | { ok: true }
+  | { ok: false; kind: "permanent" }
+  | { ok: false; kind: "temp"; until: number };
+
+export async function getTradeRestriction(
+  userId: string,
+  nowMs: number
+): Promise<TradeRestriction> {
+  const db = getDb();
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(account_status, 'active') AS accountStatus, ban_until AS banUntil
+       FROM users WHERE id = ?`
+    )
+    .bind(userId)
+    .first<{ accountStatus: string; banUntil: number | null }>();
+  if (!row) return { ok: false, kind: "permanent" };
+  if (row.accountStatus === "permanent_ban") return { ok: false, kind: "permanent" };
+  if (row.banUntil != null && row.banUntil > nowMs) {
+    return { ok: false, kind: "temp", until: row.banUntil };
+  }
+  return { ok: true };
+}
+
 export async function buildTransactionClientView(
   txId: string,
   userId: string,
@@ -814,6 +898,16 @@ export async function buildTransactionClientView(
   };
 }
 
+/** 나를 대상(target)으로 한 신고 건수 */
+export async function countReportsAgainstUser(targetUserId: string): Promise<number> {
+  const db = getDb();
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS c FROM reports WHERE target_id = ?`)
+    .bind(targetUserId)
+    .first<{ c: number }>();
+  return row?.c ?? 0;
+}
+
 export async function createReport(
   reporterId: string,
   targetId: string,
@@ -834,11 +928,7 @@ export async function createReport(
     .bind(id, reporterId, targetId, trimmed, now)
     .run();
 
-  const cnt = await db
-    .prepare(`SELECT COUNT(*) AS c FROM reports WHERE target_id = ?`)
-    .bind(targetId)
-    .first<{ c: number }>();
-  const total = cnt?.c ?? 0;
+  const total = await countReportsAgainstUser(targetId);
 
   if (total > 0 && total % 3 === 0) {
     const u = await db
@@ -858,6 +948,7 @@ export async function createReport(
         )
         .bind(nextBan, targetId)
         .run();
+      await blockClientIdsLinkedToUser(db, targetId, now);
     } else {
       const until = now + 12 * 60 * 60 * 1000;
       await db
@@ -1065,7 +1156,12 @@ export type SeekTradeResult =
   | { ok: true; waiting: true }
   | {
       ok: false;
-      reason: "NOT_ON_WAITLIST" | "NO_USER_LINK" | "NO_TX_TABLE";
+      reason:
+        | "NOT_ON_WAITLIST"
+        | "NO_USER_LINK"
+        | "NO_TX_TABLE"
+        | "TRADE_TEMP_BAN"
+        | "PERMANENT_TRADE_BAN";
     };
 
 export async function seekTradePartner(userId: string): Promise<SeekTradeResult> {
@@ -1073,6 +1169,14 @@ export async function seekTradePartner(userId: string): Promise<SeekTradeResult>
   const now = Date.now();
   const deadline = now + CLAIM_WINDOW_MS;
   await purgeExpiredClaims(db, now);
+
+  const tradeRule = await getTradeRestriction(userId, now);
+  if (!tradeRule.ok) {
+    return {
+      ok: false,
+      reason: tradeRule.kind === "permanent" ? "PERMANENT_TRADE_BAN" : "TRADE_TEMP_BAN",
+    };
+  }
 
   const onList = await db
     .prepare(`SELECT 1 AS x FROM trade_waitlist WHERE user_id = ?`)
@@ -1116,15 +1220,18 @@ export async function seekTradePartner(userId: string): Promise<SeekTradeResult>
     .prepare(
       `SELECT m.user_id AS peerId
        FROM trade_match_queue m
+       JOIN users u ON u.id = m.user_id
        LEFT JOIN trade_pair_history h
          ON h.user_low = (CASE WHEN ? < m.user_id THEN ? ELSE m.user_id END)
         AND h.user_high = (CASE WHEN ? < m.user_id THEN m.user_id ELSE ? END)
        WHERE m.user_id != ?
          AND h.user_low IS NULL
+         AND COALESCE(u.account_status, 'active') != 'permanent_ban'
+         AND (u.ban_until IS NULL OR u.ban_until <= ?)
        ORDER BY m.requested_at ASC
        LIMIT 1`
     )
-    .bind(userId, userId, userId, userId, userId)
+    .bind(userId, userId, userId, userId, userId, now)
     .first<{ peerId: string }>();
 
   if (peerRow) {

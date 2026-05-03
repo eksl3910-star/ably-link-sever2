@@ -211,17 +211,9 @@ export function TradeModal({ transactionId, linkId, onClose, onSettled }: Props)
           {busyOpen ? "처리 중…" : "상대 링크 열기 (에이블리)"}
         </button>
 
-        {canManualExit ? (
-          <button
-            type="button"
-            onClick={() => closeWithReturn()}
-            className="h-11 w-full rounded-xl border border-[#e5e7eb] bg-white text-sm font-semibold text-[#1a1a1a] hover:bg-gray-50"
-          >
-            나가기 (거래 반납)
-          </button>
-        ) : timerExpired && tx && !tx.iClickedPeerLink && tx.phase !== "done" ? (
+        {timerExpired && tx && !tx.iClickedPeerLink && tx.phase !== "done" ? (
           <p className="mt-1 text-center text-xs text-amber-800">
-            상대 링크를 아직 열지 않았어요. 열면 나가기 버튼이 표시됩니다.
+            상대 링크를 아직 열지 않았어요. 열면 위 ✕로 나갈 수 있어요.
           </p>
         ) : null}
 

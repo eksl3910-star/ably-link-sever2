@@ -3,6 +3,7 @@
 import { useState, useEffect, FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { getOrCreateClientId } from "@/lib/client-id";
 
 type Tab = "login" | "register";
 
@@ -119,6 +120,7 @@ export default function LoginPage() {
     }
 
     const endpoint = tab === "login" ? "/api/auth/login" : "/api/auth/register";
+    const clientId = getOrCreateClientId();
 
     try {
       const res = await fetch(endpoint, {
@@ -126,8 +128,8 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           tab === "register"
-            ? { nickname: normalized, password, passwordConfirm }
-            : { nickname: normalized, password, rememberMe: keepLoggedIn }
+            ? { nickname: normalized, password, passwordConfirm, clientId }
+            : { nickname: normalized, password, rememberMe: keepLoggedIn, clientId }
         ),
       });
 

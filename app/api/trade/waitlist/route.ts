@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { resolveUser } from "@/lib/session";
-import { getSettings, getTradeWaitlistStats, setTradeWaitlistEnrollment } from "@/lib/database";
+import {
+  getSettings,
+  getTradeRestriction,
+  getTradeWaitlistStats,
+  setTradeWaitlistEnrollment,
+} from "@/lib/database";
 
 export const runtime = "edge";
 
@@ -41,6 +46,16 @@ export async function POST(req: Request) {
   }
 
   const enrolled = Boolean(body.enrolled);
+  if (enrolled) {
+    const rule = await getTradeRestriction(user.id, Date.now());
+    if (!rule.ok) {
+      const msg =
+        rule.kind === "permanent"
+          ? "계정 제재로 거래 대기 명단에 등록할 수 없습니다."
+          : "신고 누적으로 일정 시간 동안 거래 대기 명단을 이용할 수 없습니다.";
+      return NextResponse.json({ ok: false, error: msg }, { status: 403 });
+    }
+  }
   await setTradeWaitlistEnrollment(user.id, enrolled);
   const s = await getTradeWaitlistStats(user.id);
   return NextResponse.json({ ok: true, count: s.count, enrolled: s.enrolled });

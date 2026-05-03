@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import {
+  bindUserClientId,
   findUserByNickname,
   insertUser,
+  isClientIdBlocked,
   normalizeNickname,
   validateNicknameRules,
 } from "@/lib/database";
@@ -15,6 +17,7 @@ export async function POST(req: Request) {
     nickname?: unknown;
     password?: unknown;
     passwordConfirm?: unknown;
+    clientId?: unknown;
   } = {};
   try {
     body = (await req.json()) as typeof body;
@@ -26,6 +29,7 @@ export async function POST(req: Request) {
   const password = typeof body.password === "string" ? body.password : "";
   const passwordConfirm =
     typeof body.passwordConfirm === "string" ? body.passwordConfirm : "";
+  const clientId = typeof body.clientId === "string" ? body.clientId.trim() : "";
 
   const nickErr = validateNicknameRules(nickname);
   if (nickErr) {
@@ -44,9 +48,17 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "이미 사용 중인 닉네임입니다." }, { status: 409 });
     }
 
+    if (clientId && (await isClientIdBlocked(clientId))) {
+      return NextResponse.json(
+        { error: "이 기기에서는 새 계정을 만들 수 없습니다." },
+        { status: 403 }
+      );
+    }
+
     const { hash, salt } = await deriveKey(password);
     const user = await insertUser(nickname, hash, salt);
     await issueSession(user.id, { rememberMe: true });
+    if (clientId) await bindUserClientId(user.id, clientId);
 
     return NextResponse.json({ ok: true, user: { id: user.id, nickname: user.nickname } });
   } catch (err) {
