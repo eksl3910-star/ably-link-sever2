@@ -182,6 +182,7 @@ export async function findUserById(userId: string): Promise<User | null> {
 
 export async function removeUserAndData(userId: string): Promise<void> {
   const db = getDb();
+  const now = Date.now();
   await db.prepare(`DELETE FROM user_client_bindings WHERE user_id = ?`).bind(userId).run();
   await db.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(userId).run();
   await db.prepare(`DELETE FROM reports WHERE reporter_id = ? OR target_id = ?`).bind(userId, userId).run();
@@ -194,7 +195,21 @@ export async function removeUserAndData(userId: string): Promise<void> {
     .prepare(`DELETE FROM receipts WHERE link_id IN (SELECT id FROM links WHERE owner_id = ?)`)
     .bind(userId)
     .run();
+  await db
+    .prepare(
+      `UPDATE links SET taker_id = NULL, claim_deadline = NULL, claimed_at = NULL,
+            state = 'queued', updated_at = ?
+        WHERE taker_id = ?`
+    )
+    .bind(now, userId)
+    .run();
   await db.prepare(`DELETE FROM links     WHERE owner_id = ?`).bind(userId).run();
+  await db.prepare(`DELETE FROM trade_waitlist WHERE user_id = ?`).bind(userId).run();
+  await db.prepare(`DELETE FROM trade_match_queue WHERE user_id = ?`).bind(userId).run();
+  await db
+    .prepare(`DELETE FROM trade_pair_history WHERE user_low = ? OR user_high = ?`)
+    .bind(userId, userId)
+    .run();
   await db.prepare(`DELETE FROM users     WHERE id = ?`).bind(userId).run();
 }
 
@@ -254,6 +269,7 @@ export async function destroySession(sessionId: string): Promise<void> {
 // ── Settings / Maintenance ────────────────────────────────────────────────────
 
 const MAX_MAINTENANCE_MESSAGE_LEN = 2000;
+const MAX_WELCOME_ALERT_MESSAGE_LEN = 800;
 
 export async function getSettings(): Promise<{
   maintenanceOn: boolean;
@@ -262,6 +278,10 @@ export async function getSettings(): Promise<{
   entryGateAblyUrl: string;
   /** false면 메인 진입 게이트 팝업 비표시 */
   entryGateEnabled: boolean;
+  /** 비어 있지 않으면 /welcome 에 긴급 안내로 표시 */
+  welcomeAlertMessage: string;
+  /** 관리자가 「다시 띄우기」할 때마다 갱신되는 ms. 클라이언트가 확인(클릭) 시각보다 크면 게이트 재표시 */
+  entryGateForceAt: number;
 }> {
   const db = getDb();
   let maintenanceOn = false;
@@ -327,7 +347,38 @@ export async function getSettings(): Promise<{
     /* entry_gate_enabled 컬럼 없음 */
   }
 
-  return { maintenanceOn, touchedAt, maintenanceMessage, entryGateAblyUrl, entryGateEnabled };
+  let welcomeAlertMessage = "";
+  try {
+    const wa = await db
+      .prepare(
+        `SELECT IFNULL(welcome_alert_message, '') AS m FROM settings WHERE key = 'global'`
+      )
+      .first<{ m: string }>();
+    welcomeAlertMessage = wa?.m ?? "";
+  } catch {
+    /* welcome_alert_message 컬럼 없음 */
+  }
+
+  let entryGateForceAt = 0;
+  try {
+    const gf = await db
+      .prepare(`SELECT entry_gate_force_at AS t FROM settings WHERE key = 'global'`)
+      .first<{ t: number | null }>();
+    const t = gf?.t;
+    entryGateForceAt = typeof t === "number" && Number.isFinite(t) ? t : 0;
+  } catch {
+    /* entry_gate_force_at 컬럼 없음 */
+  }
+
+  return {
+    maintenanceOn,
+    touchedAt,
+    maintenanceMessage,
+    entryGateAblyUrl,
+    entryGateEnabled,
+    welcomeAlertMessage,
+    entryGateForceAt,
+  };
 }
 
 export async function setEntryGateEnabled(enabled: boolean): Promise<void> {
@@ -349,6 +400,57 @@ export async function setEntryGateEnabled(enabled: boolean): Promise<void> {
     }
     throw err;
   }
+}
+
+export function clampWelcomeAlertMessage(raw: string): string {
+  const t = raw.replace(/\u0000/g, "").trimEnd();
+  if (t.length <= MAX_WELCOME_ALERT_MESSAGE_LEN) return t;
+  return t.slice(0, MAX_WELCOME_ALERT_MESSAGE_LEN);
+}
+
+export async function setWelcomeAlertMessage(message: string): Promise<void> {
+  const db = getDb();
+  const now = Date.now();
+  const text = clampWelcomeAlertMessage(message);
+  try {
+    await db
+      .prepare(
+        `UPDATE settings SET welcome_alert_message = ?, touched_at = ? WHERE key = 'global'`
+      )
+      .bind(text, now)
+      .run();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no such column/i.test(msg) || /welcome_alert_message/i.test(msg)) {
+      throw new Error(
+        "D1에 migrations/0011_settings_welcome_alert_entry_gate_force.sql 을 적용해 주세요. (settings.welcome_alert_message)"
+      );
+    }
+    throw err;
+  }
+}
+
+/** 관리자 「진입 게이트 다시 띄우기」— 값이 바뀌면 클라이언트는 아직 확인하지 않은 세션에서 모달을 다시 띄움 */
+export async function bumpEntryGateForceAt(): Promise<number> {
+  const db = getDb();
+  const now = Date.now();
+  try {
+    await db
+      .prepare(
+        `UPDATE settings SET entry_gate_force_at = ?, touched_at = ? WHERE key = 'global'`
+      )
+      .bind(now, now)
+      .run();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no such column/i.test(msg) || /entry_gate_force_at/i.test(msg)) {
+      throw new Error(
+        "D1에 migrations/0011_settings_welcome_alert_entry_gate_force.sql 을 적용해 주세요. (settings.entry_gate_force_at)"
+      );
+    }
+    throw err;
+  }
+  return now;
 }
 
 export async function setEntryGateAblyUrl(
@@ -650,40 +752,72 @@ export async function getLinkCounts(
   return { total: total?.c ?? 0, mine: mine?.c ?? 0 };
 }
 
+/** D1 COUNT(*) may surface as number or bigint depending on driver/version. */
+function countFromRow(row: { c: unknown } | null | undefined): number {
+  const v = row?.c;
+  if (typeof v === "bigint") return Number(v);
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
 export async function getAdminMetrics(): Promise<AdminMetrics> {
   const db = getDb();
   const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-  const startOfDay = now - (now % dayMs);
+  const kstDayStartMs = getKstDayStartMs(now);
 
   const totalUsers = await db
     .prepare(`SELECT COUNT(*) AS c FROM users`)
-    .first<{ c: number }>();
+    .first<{ c: unknown }>();
 
   const newUsersToday = await db
     .prepare(`SELECT COUNT(*) AS c FROM users WHERE joined_at >= ?`)
-    .bind(startOfDay)
-    .first<{ c: number }>();
+    .bind(kstDayStartMs)
+    .first<{ c: unknown }>();
 
   const totalLinks = await db
     .prepare(`SELECT COUNT(*) AS c FROM links`)
-    .first<{ c: number }>();
+    .first<{ c: unknown }>();
 
   const queuedLinks = await db
     .prepare(`SELECT COUNT(*) AS c FROM links WHERE state = 'queued'`)
-    .first<{ c: number }>();
+    .first<{ c: unknown }>();
 
   const consumedLinks = await db
     .prepare(`SELECT COUNT(*) AS c FROM links WHERE state = 'consumed'`)
-    .first<{ c: number }>();
+    .first<{ c: unknown }>();
 
   return {
-    totalUsers: totalUsers?.c ?? 0,
-    newUsersToday: newUsersToday?.c ?? 0,
-    totalLinks: totalLinks?.c ?? 0,
-    queuedLinks: queuedLinks?.c ?? 0,
-    consumedLinks: consumedLinks?.c ?? 0,
+    totalUsers: countFromRow(totalUsers),
+    newUsersToday: countFromRow(newUsersToday),
+    totalLinks: countFromRow(totalLinks),
+    queuedLinks: countFromRow(queuedLinks),
+    consumedLinks: countFromRow(consumedLinks),
   };
+}
+
+/**
+ * 모든 users 행과 링크·맞교·세션·신고 등 사용자에 종속된 데이터를 삭제합니다.
+ * 공지(announcements), settings, blocked_client_ids 는 유지합니다.
+ * 운영 실계정이 있으면 함께 삭제되므로 호출부에서 반드시 확인 절차를 둡니다.
+ */
+export async function purgeAllUsersAndRelatedData(): Promise<void> {
+  const db = getDb();
+  await db.batch([
+    db.prepare(`DELETE FROM transactions`),
+    db.prepare(`DELETE FROM receipts`),
+    db.prepare(`DELETE FROM links`),
+    db.prepare(`DELETE FROM reports`),
+    db.prepare(`DELETE FROM sessions`),
+    db.prepare(`DELETE FROM trade_waitlist`),
+    db.prepare(`DELETE FROM trade_match_queue`),
+    db.prepare(`DELETE FROM trade_pair_history`),
+    db.prepare(`DELETE FROM user_client_bindings`),
+    db.prepare(`DELETE FROM users`),
+  ]);
 }
 
 // ── User profile link / penalty ───────────────────────────────────────────────

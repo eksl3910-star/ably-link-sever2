@@ -523,6 +523,8 @@ export default function HomePage() {
   const [entryGateAblyUrl, setEntryGateAblyUrl] = useState<string>(DEFAULT_ENTRY_GATE_ABLY_URL);
   /** 관리자가 끄면 진입 게이트 비표시 */
   const [entryGateEnabled, setEntryGateEnabled] = useState(true);
+  /** 관리자 「다시 띄우기」 시각(ms); 정각 게이트와 별도로 클라이언트가 확인 전이면 모달 표시 */
+  const [entryGateForceAt, setEntryGateForceAt] = useState(0);
 
   // ── Load current user ───────────────────────────────────────────────────────
 
@@ -536,6 +538,7 @@ export default function HomePage() {
           maintenanceOn?: boolean;
           entryGateAblyUrl?: string;
           entryGateEnabled?: boolean;
+          entryGateForceAt?: number;
         };
         if (cancelled) return;
         if (typeof s.entryGateEnabled === "boolean") {
@@ -543,6 +546,9 @@ export default function HomePage() {
         }
         if (typeof s.entryGateAblyUrl === "string" && s.entryGateAblyUrl.trim()) {
           setEntryGateAblyUrl(s.entryGateAblyUrl);
+        }
+        if (typeof s.entryGateForceAt === "number" && Number.isFinite(s.entryGateForceAt)) {
+          setEntryGateForceAt(s.entryGateForceAt);
         }
         if (s.maintenanceOn) {
           router.replace("/maintenance");
@@ -669,7 +675,11 @@ export default function HomePage() {
     void fetch("/api/settings")
       .then(
         (r) =>
-          r.json() as Promise<{ entryGateAblyUrl?: string; entryGateEnabled?: boolean }>
+          r.json() as Promise<{
+            entryGateAblyUrl?: string;
+            entryGateEnabled?: boolean;
+            entryGateForceAt?: number;
+          }>
       )
       .then((s) => {
         if (typeof s.entryGateEnabled === "boolean") {
@@ -677,6 +687,9 @@ export default function HomePage() {
         }
         if (typeof s.entryGateAblyUrl === "string" && s.entryGateAblyUrl.trim()) {
           setEntryGateAblyUrl(s.entryGateAblyUrl);
+        }
+        if (typeof s.entryGateForceAt === "number" && Number.isFinite(s.entryGateForceAt)) {
+          setEntryGateForceAt(s.entryGateForceAt);
         }
       })
       .catch(() => null);
@@ -1289,7 +1302,11 @@ export default function HomePage() {
       ) : null}
 
       {user && entryGateEnabled && entryGateAblyUrl ? (
-        <EntryGateModal targetUrl={entryGateAblyUrl} userId={user.id} />
+        <EntryGateModal
+          targetUrl={entryGateAblyUrl}
+          userId={user.id}
+          entryGateForceAt={entryGateForceAt}
+        />
       ) : null}
     </>
   );

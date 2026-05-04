@@ -1,27 +1,44 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getKstHourBucketId } from "@/lib/kst";
 
 type Props = {
   targetUrl: string;
   /** 계정별로 인정 여부를 분리 */
   userId: string;
+  /** 서버 `settings.entry_gate_force_at` — 관리자 「다시 띄우기」마다 증가 */
+  entryGateForceAt: number;
 };
 
-export function EntryGateModal({ targetUrl, userId }: Props) {
-  const storageKey = `als_kst_entry_gate_hour_${userId}`;
+export function EntryGateModal({ targetUrl, userId, entryGateForceAt }: Props) {
+  const hourStorageKey = `als_kst_entry_gate_hour_${userId}`;
+  const forceAckStorageKey = `als_entry_gate_force_ack_${userId}`;
+  const forceAtRef = useRef(entryGateForceAt);
+  forceAtRef.current = entryGateForceAt;
 
   const syncBlocked = useCallback((): boolean => {
     const bucket = getKstHourBucketId(Date.now());
-    let ack = "";
+    let hourAck = "";
     try {
-      ack = localStorage.getItem(storageKey) ?? "";
+      hourAck = localStorage.getItem(hourStorageKey) ?? "";
     } catch {
       /* ignore */
     }
-    return ack !== bucket;
-  }, [storageKey]);
+    const needHour = hourAck !== bucket;
+
+    let forceAck = "0";
+    try {
+      forceAck = localStorage.getItem(forceAckStorageKey) ?? "0";
+    } catch {
+      /* ignore */
+    }
+    const lastAck = Number.parseInt(forceAck, 10);
+    const lastForceAck = Number.isFinite(lastAck) ? lastAck : 0;
+    const needForce = entryGateForceAt > lastForceAck;
+
+    return needHour || needForce;
+  }, [hourStorageKey, forceAckStorageKey, entryGateForceAt]);
 
   /** null = 아직 클라이언트에서 저장값 확인 전 */
   const [blocked, setBlocked] = useState<boolean | null>(null);
@@ -60,8 +77,14 @@ export function EntryGateModal({ targetUrl, userId }: Props) {
 
   function onConfirm() {
     window.open(targetUrl, "_blank", "noopener,noreferrer");
+    const bucket = getKstHourBucketId(Date.now());
     try {
-      localStorage.setItem(storageKey, getKstHourBucketId(Date.now()));
+      localStorage.setItem(hourStorageKey, bucket);
+    } catch {
+      /* ignore */
+    }
+    try {
+      localStorage.setItem(forceAckStorageKey, String(forceAtRef.current));
     } catch {
       /* ignore */
     }
@@ -93,7 +116,8 @@ export function EntryGateModal({ targetUrl, userId }: Props) {
           링크 열고 서비스 이용하기
         </button>
         <p className="mt-4 text-center text-[11px] leading-relaxed text-gray-400">
-          한국 시간 기준 매 정각마다 다시 눌러 주세요. 같은 시간 안에서는 한 번만 확인하면 됩니다.
+          한국 시간 기준 매 정각마다 다시 눌러 주세요. 같은 시간 안에서는 한 번만 확인하면 됩니다. 관리자가 안내를
+          다시 띄운 경우에도 여기서 확인할 수 있습니다.
         </p>
       </div>
     </div>

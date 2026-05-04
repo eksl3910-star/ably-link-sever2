@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PURGE_ALL_USERS_CONFIRM_PHRASE } from "@/lib/admin-purge-constants";
 
 type Settings = {
   maintenanceOn: boolean;
@@ -8,6 +9,7 @@ type Settings = {
   maintenanceMessage: string;
   entryGateAblyUrl: string;
   entryGateEnabled: boolean;
+  welcomeAlertMessage: string;
 };
 type Metrics = {
   totalUsers: number;
@@ -74,6 +76,9 @@ export default function AdminPage() {
   const [editBody, setEditBody] = useState("");
   const [entryGateInput, setEntryGateInput] = useState("");
   const [entryGateEnabled, setEntryGateEnabled] = useState(true);
+  const [welcomeAlertInput, setWelcomeAlertInput] = useState("");
+  const [purgeConfirm, setPurgeConfirm] = useState("");
+  const [purgeBusy, setPurgeBusy] = useState(false);
 
   // Load current settings
   useEffect(() => {
@@ -81,7 +86,7 @@ export default function AdminPage() {
       try {
         const res = await fetch("/api/settings");
         const { data: d } = await readResponseJson<
-          Partial<Settings> & { error?: string }
+          Partial<Settings> & { error?: string; welcomeAlertMessage?: string }
         >(res);
         if (!res.ok) {
           setAlert({
@@ -106,6 +111,7 @@ export default function AdminPage() {
               ? d.entryGateAblyUrl
               : "https://applink.a-bly.com/p25459",
           entryGateEnabled: d.entryGateEnabled !== false,
+          welcomeAlertMessage: typeof d.welcomeAlertMessage === "string" ? d.welcomeAlertMessage : "",
         });
         if (typeof d.maintenanceMessage === "string") setMaintenanceMsg(d.maintenanceMessage);
         if (typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()) {
@@ -117,6 +123,11 @@ export default function AdminPage() {
           setEntryGateEnabled(d.entryGateEnabled);
         } else {
           setEntryGateEnabled(true);
+        }
+        if (typeof d.welcomeAlertMessage === "string") {
+          setWelcomeAlertInput(d.welcomeAlertMessage);
+        } else {
+          setWelcomeAlertInput("");
         }
       } catch {
         setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
@@ -291,6 +302,88 @@ export default function AdminPage() {
     }
   }
 
+  async function saveWelcomeAlert() {
+    if (busy) return;
+    setAlert(null);
+    if (!password) {
+      setAlert({ message: "관리자 비밀번호를 입력해주세요.", type: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/welcome-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password, message: welcomeAlertInput }),
+      });
+      const { data } = await readResponseJson<{
+        ok?: boolean;
+        error?: string;
+        welcomeAlertMessage?: string;
+        touchedAt?: number;
+      }>(res);
+      if (!data || !res.ok || !data.ok) {
+        setAlert({
+          message: data?.error ?? `저장 실패 (HTTP ${res.status})`,
+          type: "error",
+        });
+        return;
+      }
+      if (typeof data.welcomeAlertMessage === "string") {
+        setWelcomeAlertInput(data.welcomeAlertMessage);
+      }
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              welcomeAlertMessage:
+                typeof data.welcomeAlertMessage === "string" ? data.welcomeAlertMessage : prev.welcomeAlertMessage,
+              touchedAt: typeof data.touchedAt === "number" ? data.touchedAt : prev.touchedAt,
+            }
+          : null
+      );
+      setAlert({ message: "환영 페이지 긴급 안내를 저장했습니다.", type: "success" });
+    } catch {
+      setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forceEntryGateReshow() {
+    if (busy) return;
+    setAlert(null);
+    if (!password) {
+      setAlert({ message: "관리자 비밀번호를 입력해주세요.", type: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/admin/entry-gate-force", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const { data } = await readResponseJson<{ ok?: boolean; error?: string }>(res);
+      if (!data || !res.ok || !data.ok) {
+        setAlert({
+          message: data?.error ?? `실패 (HTTP ${res.status})`,
+          type: "error",
+        });
+        return;
+      }
+      setAlert({
+        message:
+          "진입 게이트를 다시 띄우도록 설정했습니다. 메인에 있는 사용자는 최대 약 20초 안에(설정 새로고침 주기) 또는 탭을 다시 보면 팝업이 나타납니다. 매 정각 자동 안내는 그대로 동작합니다.",
+        type: "success",
+      });
+    } catch {
+      setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function loadStats() {
     setAlert(null);
     if (!password) {
@@ -322,6 +415,56 @@ export default function AdminPage() {
       setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function purgeAllUsersAndLinks() {
+    setAlert(null);
+    if (!password) {
+      setAlert({ message: "관리자 비밀번호를 입력해주세요.", type: "error" });
+      return;
+    }
+    if (purgeConfirm !== PURGE_ALL_USERS_CONFIRM_PHRASE) {
+      setAlert({
+        message: "확인 문구가 일치하지 않습니다. 아래 입력란에 표시된 문구를 정확히 복사해 주세요.",
+        type: "error",
+      });
+      return;
+    }
+    if (
+      !globalThis.confirm(
+        "정말로 모든 유저와 링크·맞교·세션·신고 데이터를 삭제할까요? 공지와 설정은 유지됩니다. 되돌릴 수 없습니다."
+      )
+    ) {
+      return;
+    }
+
+    setPurgeBusy(true);
+    try {
+      const res = await fetch("/api/admin/purge-all-users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password, confirm: purgeConfirm }),
+      });
+      const { data } = await readResponseJson<{ ok?: boolean; error?: string }>(res);
+      if (!data || !res.ok || !data.ok) {
+        setAlert({
+          message: data?.error ?? `삭제 실패 (HTTP ${res.status})`,
+          type: "error",
+        });
+        return;
+      }
+      setPurgeConfirm("");
+      setMetrics(null);
+      setAlert({
+        message:
+          "유저·링크·맞교 관련 데이터를 모두 삭제했습니다. 통계의 「조회」로 반영 여부를 확인하세요.",
+        type: "success",
+      });
+    } catch {
+      setAlert({ message: "네트워크 오류가 발생했습니다.", type: "error" });
+    } finally {
+      setPurgeBusy(false);
     }
   }
 
@@ -563,6 +706,30 @@ export default function AdminPage() {
         </div>
 
         <div className="mt-4 rounded-xl border border-[#e7e9ee] bg-[#fbfbfd] p-4">
+          <p className="text-sm font-semibold text-[#1f2430]">환영 페이지 긴급 안내</p>
+          <p className="mt-1 text-xs text-[#7c8394]">
+            <code className="text-[#5c6570]">/welcome</code> 상단에 노란색 강조 박스로 표시됩니다. 비우고 저장하면
+            숨깁니다. (최대 800자)
+          </p>
+          <textarea
+            value={welcomeAlertInput}
+            onChange={(e) => setWelcomeAlertInput(e.target.value)}
+            maxLength={800}
+            rows={4}
+            placeholder="예: 일시적으로 가입이 지연되고 있습니다. 잠시 후 다시 시도해 주세요."
+            className="mt-3 w-full resize-y rounded-xl border border-[#d9dde6] bg-white px-3 py-2.5 text-sm text-[#1f2430] outline-none placeholder:text-[#9aa3b2] focus:border-[#111]"
+          />
+          <button
+            type="button"
+            disabled={loading || busy}
+            onClick={() => void saveWelcomeAlert()}
+            className="mt-3 h-10 w-full rounded-xl bg-[#111] text-sm font-bold text-white disabled:opacity-50"
+          >
+            긴급 안내 저장
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-[#e7e9ee] bg-[#fbfbfd] p-4">
           <p className="text-sm font-semibold text-[#1f2430]">메인 진입 게이트</p>
           <p className="mt-1 text-xs text-[#7c8394]">
             로그인 후 메인에서 사용자가 눌러야 하는 「에이블리 수익성 링크」입니다. HTTPS이며 a-bly.com
@@ -593,6 +760,18 @@ export default function AdminPage() {
           >
             저장
           </button>
+          <button
+            type="button"
+            disabled={loading || busy || !entryGateEnabled}
+            onClick={() => void forceEntryGateReshow()}
+            className="mt-2 h-10 w-full rounded-xl border border-[#d9dde6] bg-white text-sm font-bold text-[#1f2430] disabled:opacity-50"
+          >
+            진입 게이트 지금 다시 띄우기
+          </button>
+          <p className="mt-2 text-[11px] leading-relaxed text-[#9aa3b2]">
+            게이트 사용이 켜져 있을 때만 동작합니다. 이미 이번 시간대에 확인한 사용자에게도 팝업이 다시 뜨며, 버튼을
+            눌러 확인하면 사라집니다. 한국 시간 매 정각 자동 안내는 기존과 같습니다.
+          </p>
         </div>
 
         <div className="mt-4 rounded-xl border border-[#e7e9ee] bg-[#fbfbfd] p-4">
@@ -736,7 +915,7 @@ export default function AdminPage() {
             <div className="grid grid-cols-2 gap-2">
               {[
                 { label: "전체 유저", value: metrics.totalUsers },
-                { label: "오늘 가입", value: metrics.newUsersToday },
+                { label: "오늘 가입 (KST)", value: metrics.newUsersToday },
                 { label: "전체 링크", value: metrics.totalLinks },
                 { label: "대기 중", value: metrics.queuedLinks },
                 { label: "소비됨", value: metrics.consumedLinks },
@@ -753,6 +932,41 @@ export default function AdminPage() {
           ) : (
             <p className="text-xs text-[#9aa3b2]">비밀번호를 입력하고 조회를 눌러주세요.</p>
           )}
+          <p className="mt-2 text-[11px] text-[#9aa3b2] leading-snug">
+            전체 유저 수·링크 수는 DB의 <code className="text-[#5c6570]">COUNT(*)</code> 결과입니다. 오늘 가입은
+            한국 자정(KST) 이후 <code className="text-[#5c6570]">joined_at</code> 기준입니다.
+          </p>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-[#f5c6cb] bg-[#fff5f5] p-4">
+          <p className="text-sm font-semibold text-[#9b2c2c]">데이터 전체 삭제 (복구 불가)</p>
+          <p className="mt-2 text-xs text-[#7a3b3b] leading-relaxed">
+            <code className="text-[#5c1f1f]">users</code> 전원과 세션·링크·맞교·신고·대기열 등 연관 행을 삭제합니다.
+            테스트용 대량 가짜 유저를 비울 때 사용하세요. 실서비스 계정이 있으면 함께 사라집니다.{" "}
+            <code className="text-[#5c1f1f]">settings</code>, <code className="text-[#5c1f1f]">announcements</code>,{" "}
+            <code className="text-[#5c1f1f]">blocked_client_ids</code> 는 그대로 둡니다.
+          </p>
+          <p className="mt-2 text-xs font-mono text-[#5c1f1f] break-all">
+            확인 문구: {PURGE_ALL_USERS_CONFIRM_PHRASE}
+          </p>
+          <input
+            type="text"
+            value={purgeConfirm}
+            onChange={(e) => setPurgeConfirm(e.target.value)}
+            placeholder="위 확인 문구를 그대로 입력"
+            disabled={purgeBusy}
+            className="mt-2 w-full rounded-lg border border-[#e8b4b8] bg-white px-3 py-2 text-sm text-[#1f2430] placeholder:text-[#b8a0a0] disabled:opacity-50"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            disabled={purgeBusy || busy}
+            onClick={() => void purgeAllUsersAndLinks()}
+            className="mt-3 w-full rounded-xl bg-[#c53030] px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-[#9b2c2c] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {purgeBusy ? "삭제 중…" : "모든 유저·연관 데이터 삭제 실행"}
+          </button>
         </div>
 
         <p className="mt-6 text-xs text-[#7c8394]">

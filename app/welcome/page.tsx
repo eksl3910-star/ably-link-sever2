@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 function LinkGlyph({ className }: { className?: string }) {
@@ -19,19 +19,39 @@ function LinkGlyph({ className }: { className?: string }) {
 
 export default function WelcomePage() {
   const router = useRouter();
+  const [welcomeAlert, setWelcomeAlert] = useState("");
 
   useEffect(() => {
     fetch("/api/settings")
-      .then((r) => r.json() as Promise<{ maintenanceOn?: boolean }>)
+      .then(
+        (r) =>
+          r.json() as Promise<{
+            maintenanceOn?: boolean;
+            welcomeAlertMessage?: string;
+          }>
+      )
       .then((d) => {
         if (d.maintenanceOn) router.replace("/maintenance");
+        else if (typeof d.welcomeAlertMessage === "string" && d.welcomeAlertMessage.trim()) {
+          setWelcomeAlert(d.welcomeAlertMessage.trim());
+        }
       })
       .catch(() => {});
   }, [router]);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-[#f5f5f7] px-6">
-      <div className="als-enter max-w-sm text-center">
+      <div className="als-enter w-full max-w-sm text-center">
+        {welcomeAlert ? (
+          <div
+            role="alert"
+            className="mb-8 w-full rounded-2xl border border-amber-300/80 bg-amber-50 px-4 py-3 text-left shadow-sm"
+          >
+            <p className="text-xs font-bold uppercase tracking-wide text-amber-800">긴급 안내</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-amber-950">{welcomeAlert}</p>
+          </div>
+        ) : null}
+
         <div className="mb-10 flex justify-center">
           <div className="flex h-20 w-20 items-center justify-center rounded-[1.35rem] bg-[#fff0f0] shadow-md shadow-[#ff5a5f]/15 transition-transform duration-300 ease-out hover:scale-105">
             <LinkGlyph className="h-10 w-10 text-[#ff5a5f]" />

@@ -13,6 +13,8 @@ export async function GET() {
         maintenanceMessage: settings.maintenanceMessage,
         entryGateAblyUrl: settings.entryGateAblyUrl,
         entryGateEnabled: settings.entryGateEnabled,
+        welcomeAlertMessage: settings.welcomeAlertMessage,
+        entryGateForceAt: settings.entryGateForceAt,
       },
       {
         headers: {
