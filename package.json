@@ -8,6 +8,7 @@
     "build": "next build",
     "pages:build": "node ./node_modules/@cloudflare/next-on-pages/bin/index.js",
     "deploy": "pnpm run pages:build && pnpm exec wrangler pages deploy .vercel/output/static --project-name ably-link-sever2",
+    "deploy-all": "git add . && git commit -m \"auto deploy\" && git push",
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit"
