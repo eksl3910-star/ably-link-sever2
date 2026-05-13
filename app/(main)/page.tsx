@@ -50,6 +50,7 @@ const WITHDRAW_CONFIRM_PHRASE = "위 내용을 모두 이해했습니다";
 
 const CONTACT_KAKAO_URL = "https://open.kakao.com/o/sKsl7Tsi";
 const CONTACT_IG_CURRENT = "https://www.instagram.com/riikuuu0/";
+const MOALINK_PAGES_URL = "https://moalink.pages.dev/";
 
 const LAYOUT_STORAGE_KEY = "als_layout_mode";
 /** 탭/창을 떠난 채로 이 시간이 지나면 대기 명단 자동 해제 */
@@ -1235,6 +1236,24 @@ export default function HomePage() {
                   : "flex flex-1 flex-col space-y-3"
               }
             >
+              <a
+                href={MOALINK_PAGES_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex h-12 w-full shrink-0 items-center justify-center gap-2 rounded-2xl border-2 border-[#e8e8e8] bg-white px-4 text-center text-sm font-semibold text-[#1a1a1a] shadow-sm transition hover:border-[#ff5a5f]/50 hover:bg-[#fff8f8] hover:text-[#ff5a5f] active:scale-[0.99] sm:text-[15px]"
+              >
+                다른 서비스도 이용하러 가기
+                <svg className="h-4 w-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M7 17L17 7M17 7H9M17 7v8"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </a>
+
               {/* 공지 */}
               <div className="overflow-hidden rounded-2xl border border-[#ececec] bg-white shadow-sm">
                 <button
