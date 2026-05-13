@@ -9,9 +9,11 @@ type Props = {
   userId: string;
   /** 서버 `settings.entry_gate_force_at` — 관리자 「다시 띄우기」마다 증가 */
   entryGateForceAt: number;
+  /** 게이트를 통과했거나 이번 세션에서 게이트가 필요 없을 때 (부모에서 사용 방법 표시 등에 사용) */
+  onGatePassed?: () => void;
 };
 
-export function EntryGateModal({ targetUrl, userId, entryGateForceAt }: Props) {
+export function EntryGateModal({ targetUrl, userId, entryGateForceAt, onGatePassed }: Props) {
   const hourStorageKey = `als_kst_entry_gate_hour_${userId}`;
   const forceAckStorageKey = `als_entry_gate_force_ack_${userId}`;
   const forceAtRef = useRef(entryGateForceAt);
@@ -72,6 +74,12 @@ export function EntryGateModal({ targetUrl, userId, entryGateForceAt }: Props) {
       document.body.style.overflow = "";
     };
   }, [blocked]);
+
+  useEffect(() => {
+    if (blocked === false) {
+      onGatePassed?.();
+    }
+  }, [blocked, onGatePassed]);
 
   if (blocked !== true) return null;
 

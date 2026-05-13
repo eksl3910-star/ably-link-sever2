@@ -296,7 +296,7 @@ function GuidePopup({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 als-backdrop-enter md:items-center md:p-6"
+      className="fixed inset-0 z-[92] flex items-end justify-center bg-black/45 als-backdrop-enter md:items-center md:p-6"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
@@ -566,6 +566,8 @@ export default function HomePage() {
   const [receiving, setReceiving] = useState(false);
 
   const [needsDailyLink, setNeedsDailyLink] = useState(false);
+  /** /api/user/link 확인 완료 전에는 사용 방법 타이밍을 잡지 않음 (오늘 링크 필요 여부 레이스 방지) */
+  const [linkRequirementResolved, setLinkRequirementResolved] = useState(false);
   const [tradeSession, setTradeSession] = useState<{ transactionId: string; linkId: string } | null>(
     null
   );
@@ -586,6 +588,13 @@ export default function HomePage() {
   const [entryGateEnabled, setEntryGateEnabled] = useState(true);
   /** 관리자 「다시 띄우기」 시각(ms); 정각 게이트와 별도로 클라이언트가 확인 전이면 모달 표시 */
   const [entryGateForceAt, setEntryGateForceAt] = useState(0);
+
+  /** 진입 게이트를 통과했거나, 관리자 설정으로 게이트가 꺼진 경우 true */
+  const [entryGateFlowDone, setEntryGateFlowDone] = useState(false);
+
+  const handleEntryGatePassed = useCallback(() => {
+    setEntryGateFlowDone(true);
+  }, []);
 
   // ── Load current user ───────────────────────────────────────────────────────
 
@@ -645,6 +654,8 @@ export default function HomePage() {
             }
           } catch {
             /* ignore */
+          } finally {
+            if (!cancelled) setLinkRequirementResolved(true);
           }
         } else {
           router.replace("/welcome");
@@ -781,6 +792,13 @@ export default function HomePage() {
   }
 
   useEffect(() => {
+    const gateShown = Boolean(entryGateEnabled && entryGateAblyUrl?.trim());
+    if (!gateShown) {
+      setEntryGateFlowDone(true);
+    }
+  }, [entryGateEnabled, entryGateAblyUrl]);
+
+  useEffect(() => {
     if (tradeDailyRemaining != null && tradeDailyRemaining > 0) {
       dailyLimitNoticeDismissedRef.current = false;
     }
@@ -805,9 +823,12 @@ export default function HomePage() {
     }
   }, [user?.id]);
 
-  /** 홈(`/`)으로 들어올 때마다 — 「다시 보지 않기」가 없으면 사용 방법 표시 (닫기만 한 경우 재방문 시 다시 표시) */
+  /** 홈(`/`) — 진입 게이트·오늘 링크 안내가 끝난 뒤 「다시 보지 않기」가 없으면 사용 방법 표시 */
   useEffect(() => {
     if (authLoading || !user || pathname !== "/") return;
+    if (!entryGateFlowDone) return;
+    if (!linkRequirementResolved) return;
+    if (needsDailyLink) return;
     let cancelled = false;
     let t: ReturnType<typeof setTimeout> | null = null;
     try {
@@ -825,7 +846,14 @@ export default function HomePage() {
       cancelled = true;
       if (t != null) clearTimeout(t);
     };
-  }, [pathname, authLoading, user?.id]);
+  }, [
+    pathname,
+    authLoading,
+    user?.id,
+    entryGateFlowDone,
+    linkRequirementResolved,
+    needsDailyLink,
+  ]);
 
   useEffect(() => {
     if (announcements.length === 0) {
@@ -1481,6 +1509,7 @@ export default function HomePage() {
           targetUrl={entryGateAblyUrl}
           userId={user.id}
           entryGateForceAt={entryGateForceAt}
+          onGatePassed={handleEntryGatePassed}
         />
       ) : null}
     </>
