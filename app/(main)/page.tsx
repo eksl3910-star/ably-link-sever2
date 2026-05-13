@@ -1236,24 +1236,6 @@ export default function HomePage() {
                   : "flex flex-1 flex-col space-y-3"
               }
             >
-              <a
-                href={MOALINK_PAGES_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex h-12 w-full shrink-0 items-center justify-center gap-2 rounded-2xl border-2 border-[#e8e8e8] bg-white px-4 text-center text-sm font-semibold text-[#1a1a1a] shadow-sm transition hover:border-[#ff5a5f]/50 hover:bg-[#fff8f8] hover:text-[#ff5a5f] active:scale-[0.99] sm:text-[15px]"
-              >
-                다른 서비스도 이용하러 가기
-                <svg className="h-4 w-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <path
-                    d="M7 17L17 7M17 7H9M17 7v8"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </a>
-
               {/* 공지 */}
               <div className="overflow-hidden rounded-2xl border border-[#ececec] bg-white shadow-sm">
                 <button
@@ -1427,6 +1409,23 @@ export default function HomePage() {
                       오늘은 맞교 완료 한도에 도달했습니다. 내일 다시 이용해 주세요.
                     </p>
                   ) : null}
+                  <a
+                    href={MOALINK_PAGES_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-6 flex h-12 w-full items-center justify-center gap-2 rounded-2xl border-2 border-[#e8e8e8] bg-white px-4 text-center text-sm font-semibold text-[#1a1a1a] shadow-sm transition hover:border-[#ff5a5f]/50 hover:bg-[#fff8f8] hover:text-[#ff5a5f] active:scale-[0.99] sm:text-[15px]"
+                  >
+                    다른 서비스도 이용하러 가기
+                    <svg className="h-4 w-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" aria-hidden>
+                      <path
+                        d="M7 17L17 7M17 7H9M17 7v8"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </a>
                 </div>
               )}
             </div>
