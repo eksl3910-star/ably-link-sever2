@@ -59,7 +59,7 @@ export default function WelcomePage() {
         </div>
 
         <h1 className="text-3xl font-bold tracking-tight text-[#1a1a1a] sm:text-4xl">
-          에이블리 쇼핑 지원금 교환
+          에이블리 옷장 맞교
         </h1>
         <p className="mt-4 text-base leading-relaxed text-gray-500 sm:text-lg">
           클릭 한 번으로 링크를 공유하고 받아보세요.

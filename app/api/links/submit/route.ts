@@ -27,7 +27,7 @@ export async function POST(req: Request) {
 
   if (!url) {
     return NextResponse.json(
-      { error: "에이블리 링크(a-bly.com)만 올릴 수 있어요." },
+      { error: "에이블리 링크(https://applink.a-bly.com/ 로 시작)만 올릴 수 있어요." },
       { status: 400 }
     );
   }

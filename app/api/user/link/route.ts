@@ -77,7 +77,7 @@ export async function PUT(req: Request) {
   const url = parseAndValidateAblyUrl(text);
   if (!url) {
     return NextResponse.json(
-      { error: "에이블리 링크(a-bly.com)만 등록할 수 있어요." },
+      { error: "에이블리 링크(https://applink.a-bly.com/ 로 시작)만 등록할 수 있어요." },
       { status: 400 }
     );
   }

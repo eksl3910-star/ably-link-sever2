@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { DEFAULT_ENTRY_GATE_ABLY_URL } from "@/lib/constants";
+import { usePathname, useRouter } from "next/navigation";
+import { DEFAULT_ENTRY_GATE_ABLY_URL, TEMP_DAILY_TRADE_COMPLETED_LIMIT } from "@/lib/constants";
 import { getOrCreateClientId } from "@/lib/client-id";
 import { DailyLinkModal } from "./DailyLinkModal";
 import { EntryGateModal } from "./EntryGateModal";
@@ -99,6 +99,55 @@ function IconRefresh({ className }: { className?: string }) {
         strokeLinejoin="round"
       />
     </svg>
+  );
+}
+
+/** 「다시 보지 않기」 시 계정별로 저장 */
+function usageGuideNeverStorageKey(userId: string) {
+  return `als_usage_guide_never_${userId}`;
+}
+
+function DailyTradeLimitModal({
+  completed,
+  limit,
+  onDismiss,
+}: {
+  completed: number;
+  limit: number;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[76] flex items-end justify-center bg-black/50 als-backdrop-enter md:items-center md:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="daily-trade-limit-title"
+      onClick={(e) => e.target === e.currentTarget && onDismiss()}
+    >
+      <div
+        className="als-modal-enter w-full max-w-[400px] rounded-t-3xl bg-white p-6 pb-8 shadow-2xl md:rounded-3xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p id="daily-trade-limit-title" className="text-xs font-semibold uppercase tracking-wide text-gray-400">
+          안내
+        </p>
+        <p className="mt-3 text-center text-xl font-bold text-[#1a1a1a]">오늘 맞교 완료 한도</p>
+        <p className="mt-3 text-center text-sm leading-relaxed text-[#555]">
+          한국 시간 기준 오늘 완료한 맞교가{" "}
+          <span className="font-semibold text-[#ff5a5f]">
+            {completed}/{limit}회
+          </span>
+          로 도달했습니다. 내일 자정 이후에 다시 이용할 수 있어요.
+        </p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="mt-6 h-12 w-full rounded-xl bg-[#111] text-base font-semibold text-white transition hover:opacity-95 active:scale-[0.98]"
+        >
+          확인
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -226,16 +275,22 @@ function ContactModal({ onClose }: { onClose: () => void }) {
 // ── Guide popup ───────────────────────────────────────────────────────────────
 
 function GuidePopup({
+  userId,
   onClose,
   onRequestWithdraw,
   hideWithdraw,
 }: {
+  userId: string;
   onClose: () => void;
   onRequestWithdraw: () => void;
   hideWithdraw?: boolean;
 }) {
   const handleDontShow = () => {
-    localStorage.setItem("als_guide_done", "1");
+    try {
+      localStorage.setItem(usageGuideNeverStorageKey(userId), "1");
+    } catch {
+      /* ignore */
+    }
     onClose();
   };
 
@@ -263,7 +318,7 @@ function GuidePopup({
           {
             n: 1,
             title: "마이페이지에서 에이블리 링크 등록",
-            desc: "오늘 쓸 에이블리 링크(a-bly.com)를 마이페이지에서 한 번 등록해요.",
+            desc: "오늘 쓸 에이블리 링크(https://applink.a-bly.com/…)를 마이페이지에서 한 번 등록해요.",
           },
           {
             n: 2,
@@ -299,7 +354,7 @@ function GuidePopup({
             "⚡ 대기 명단에 있어야 맞교하기를 쓸 수 있어요",
             "🤝 맞교하기를 누른 사람끼리 1:1로 매칭돼요",
             "⏱️ 맞교 창 타이머 안에 서로 링크를 열어 주세요",
-            "🔗 에이블리 링크는 마이페이지에서 등록해 주세요",
+            "🔗 에이블리 링크(https://applink.a-bly.com/)는 마이페이지에서 등록해 주세요",
           ].map((item) => (
             <p key={item} className="text-xs text-[#555] leading-relaxed">
               {item}
@@ -484,6 +539,7 @@ function WithdrawConfirmModal({
 
 export default function HomePage() {
   const router = useRouter();
+  const pathname = usePathname();
 
   // Auth
   const [user, setUser] = useState<User | null>(null);
@@ -493,6 +549,11 @@ export default function HomePage() {
   const [waitlistEnrolled, setWaitlistEnrolled] = useState(false);
   const [waitlistToggleBusy, setWaitlistToggleBusy] = useState(false);
   const [waitlistCountRefreshing, setWaitlistCountRefreshing] = useState(false);
+  const [tradeDailyCompleted, setTradeDailyCompleted] = useState(0);
+  const [tradeDailyLimit, setTradeDailyLimit] = useState(TEMP_DAILY_TRADE_COMPLETED_LIMIT);
+  const [tradeDailyRemaining, setTradeDailyRemaining] = useState<number | null>(null);
+  const [showDailyTradeLimitModal, setShowDailyTradeLimitModal] = useState(false);
+  const dailyLimitNoticeDismissedRef = useRef(false);
   const [tradeSearching, setTradeSearching] = useState(false);
   const seekAbortRef = useRef(false);
 
@@ -616,10 +677,24 @@ export default function HomePage() {
   const loadWaitlistStats = useCallback(async () => {
     try {
       const r = await fetch("/api/trade/waitlist");
-      const d = (await r.json()) as { ok?: boolean; count?: number; enrolled?: boolean };
+      const d = (await r.json()) as {
+        ok?: boolean;
+        count?: number;
+        enrolled?: boolean;
+        tradeDailyCompleted?: number;
+        tradeDailyLimit?: number;
+        tradeDailyRemaining?: number;
+      };
       if (d.ok) {
         setWaitlistCount(d.count ?? 0);
         setWaitlistEnrolled(Boolean(d.enrolled));
+        setTradeDailyCompleted(d.tradeDailyCompleted ?? 0);
+        setTradeDailyLimit(d.tradeDailyLimit ?? TEMP_DAILY_TRADE_COMPLETED_LIMIT);
+        const rem = d.tradeDailyRemaining ?? 0;
+        setTradeDailyRemaining(rem);
+        if (rem === 0 && !dailyLimitNoticeDismissedRef.current) {
+          setShowDailyTradeLimitModal(true);
+        }
       }
     } catch {
       /* ignore */
@@ -706,13 +781,51 @@ export default function HomePage() {
   }
 
   useEffect(() => {
+    if (tradeDailyRemaining != null && tradeDailyRemaining > 0) {
+      dailyLimitNoticeDismissedRef.current = false;
+    }
+  }, [tradeDailyRemaining]);
+
+  useEffect(() => {
     if (!authLoading && user) {
       refreshDashboard();
-      if (!localStorage.getItem("als_guide_done")) {
-        setTimeout(() => setShowGuide(true), 400);
-      }
     }
   }, [authLoading, user, refreshDashboard]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    try {
+      const legacy = localStorage.getItem("als_guide_done");
+      if (legacy === "1") {
+        localStorage.setItem(usageGuideNeverStorageKey(user.id), "1");
+        localStorage.removeItem("als_guide_done");
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [user?.id]);
+
+  /** 홈(`/`)으로 들어올 때마다 — 「다시 보지 않기」가 없으면 사용 방법 표시 (닫기만 한 경우 재방문 시 다시 표시) */
+  useEffect(() => {
+    if (authLoading || !user || pathname !== "/") return;
+    let cancelled = false;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    try {
+      if (!localStorage.getItem(usageGuideNeverStorageKey(user.id))) {
+        t = setTimeout(() => {
+          if (!cancelled) setShowGuide(true);
+        }, 400);
+      }
+    } catch {
+      t = setTimeout(() => {
+        if (!cancelled) setShowGuide(true);
+      }, 400);
+    }
+    return () => {
+      cancelled = true;
+      if (t != null) clearTimeout(t);
+    };
+  }, [pathname, authLoading, user?.id]);
 
   useEffect(() => {
     if (announcements.length === 0) {
@@ -758,11 +871,21 @@ export default function HomePage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ enrolled: false }),
           })
-            .then((r) => r.json() as Promise<{ ok?: boolean; count?: number; enrolled?: boolean }>)
+            .then((r) => r.json() as Promise<{
+              ok?: boolean;
+              count?: number;
+              enrolled?: boolean;
+              tradeDailyCompleted?: number;
+              tradeDailyLimit?: number;
+              tradeDailyRemaining?: number;
+            }>)
             .then((d) => {
               if (d.ok) {
                 setWaitlistCount(d.count ?? 0);
                 setWaitlistEnrolled(Boolean(d.enrolled));
+                setTradeDailyCompleted(d.tradeDailyCompleted ?? 0);
+                setTradeDailyLimit(d.tradeDailyLimit ?? TEMP_DAILY_TRADE_COMPLETED_LIMIT);
+                setTradeDailyRemaining(d.tradeDailyRemaining ?? 0);
               }
             })
             .catch(() => null);
@@ -825,6 +948,14 @@ export default function HomePage() {
 
   async function handleToggleWaitlist() {
     if (waitlistToggleBusy) return;
+    if (!waitlistEnrolled && tradeDailyRemaining === 0) {
+      setReceiveAlert({
+        message:
+          "오늘(한국 시간 기준) 완료한 맞교가 상한에 도달하여 대기 명단에 등록할 수 없습니다. 내일 다시 이용해 주세요.",
+        type: "warning",
+      });
+      return;
+    }
     setWaitlistToggleBusy(true);
     try {
       const res = await fetch("/api/trade/waitlist", {
@@ -832,13 +963,24 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enrolled: !waitlistEnrolled }),
       });
-      const d = (await res.json()) as { ok?: boolean; count?: number; enrolled?: boolean; error?: string };
+      const d = (await res.json()) as {
+        ok?: boolean;
+        count?: number;
+        enrolled?: boolean;
+        error?: string;
+        tradeDailyCompleted?: number;
+        tradeDailyLimit?: number;
+        tradeDailyRemaining?: number;
+      };
       if (!res.ok || !d.ok) {
         setReceiveAlert({ message: d.error ?? "대기 명단 설정에 실패했습니다.", type: "error" });
         return;
       }
       setWaitlistCount(d.count ?? 0);
       setWaitlistEnrolled(Boolean(d.enrolled));
+      setTradeDailyCompleted(d.tradeDailyCompleted ?? 0);
+      setTradeDailyLimit(d.tradeDailyLimit ?? TEMP_DAILY_TRADE_COMPLETED_LIMIT);
+      setTradeDailyRemaining(d.tradeDailyRemaining ?? 0);
     } catch {
       setReceiveAlert({ message: "연결에 실패했습니다.", type: "error" });
     } finally {
@@ -878,12 +1020,15 @@ export default function HomePage() {
             data.reason === "NOT_ON_WAITLIST"
               ? "먼저 대기 명단에 등록해 주세요."
               : data.reason === "NO_USER_LINK"
-                ? (data.error ?? "마이페이지에서 에이블리 링크를 등록해 주세요.")
+                ? (data.error ?? "마이페이지에서 에이블리 링크(https://applink.a-bly.com/)를 등록해 주세요.")
                 : data.reason === "TRADE_TEMP_BAN"
                   ? (data.error ?? "신고 누적으로 일정 시간 동안 맞교할 수 없습니다.")
                   : data.reason === "PERMANENT_TRADE_BAN"
                     ? (data.error ?? "계정 제재로 맞교할 수 없습니다.")
-                    : (data.error ?? "맞교를 시작할 수 없어요.");
+                    : data.reason === "DAILY_TRADE_LIMIT"
+                      ? (data.error ??
+                        "오늘(한국 시간 기준) 완료한 맞교가 상한에 도달했습니다. 내일 다시 이용해 주세요.")
+                      : (data.error ?? "맞교를 시작할 수 없어요.");
           setReceiveAlert({ message: msg, type: "warning" });
           return;
         }
@@ -966,7 +1111,7 @@ export default function HomePage() {
                 isDesktopLayout ? "text-base sm:text-lg" : "text-base"
               }`}
             >
-              에이블리 쇼핑 지원금 교환
+              에이블리 옷장 맞교
             </h1>
             <div className="flex items-center gap-1.5 sm:gap-2">
               <span
@@ -1168,7 +1313,7 @@ export default function HomePage() {
                 <button
                   type="button"
                   onClick={() => void handleToggleWaitlist()}
-                  disabled={waitlistToggleBusy}
+                  disabled={waitlistToggleBusy || (!waitlistEnrolled && tradeDailyRemaining === 0)}
                   aria-pressed={waitlistEnrolled}
                   className={`w-full rounded-2xl border-2 font-semibold transition-all active:scale-[0.98] disabled:opacity-50 ${
                     waitlistEnrolled
@@ -1186,6 +1331,14 @@ export default function HomePage() {
                   등록해야 위 숫자에 포함되고, 맞교하기를 쓸 수 있어요. 다른 화면으로 30초 이상
                   머물면 대기는 자동으로 꺼져요.
                 </p>
+                {tradeDailyRemaining !== null ? (
+                  <p className="mt-2 text-center text-[11px] leading-relaxed text-gray-500">
+                    오늘 맞교 완료 {tradeDailyCompleted}/{tradeDailyLimit}회
+                    {tradeDailyRemaining === 0 ? (
+                      <span className="font-semibold text-[#c0392b]"> · 내일 자정 이후 다시 가능</span>
+                    ) : null}
+                  </p>
+                ) : null}
               </div>
 
               {/* Receive / trade */}
@@ -1194,7 +1347,12 @@ export default function HomePage() {
                   {receiveAlert && <Alert state={receiveAlert} />}
                   <button
                     onClick={() => void handleSeekTrade()}
-                    disabled={receiving || needsDailyLink || !waitlistEnrolled}
+                    disabled={
+                      receiving ||
+                      needsDailyLink ||
+                      !waitlistEnrolled ||
+                      tradeDailyRemaining === 0
+                    }
                     className={`w-full rounded-2xl bg-[#ff5a5f] text-white font-bold shadow-[0_4px_16px_rgba(255,90,95,0.25)] disabled:bg-gray-300 disabled:shadow-none disabled:cursor-not-allowed active:scale-[0.97] transition-all ${
                       isDesktopLayout
                         ? "h-[4.5rem] text-xl"
@@ -1214,7 +1372,12 @@ export default function HomePage() {
                   ) : null}
                   {needsDailyLink ? (
                     <p className="mt-2 text-center text-xs text-gray-500">
-                      마이페이지에서 오늘의 에이블리 링크를 등록한 뒤 이용할 수 있어요.
+                      마이페이지에서 오늘의 에이블리 링크(https://applink.a-bly.com/)를 등록한 뒤 이용할 수 있어요.
+                    </p>
+                  ) : null}
+                  {waitlistEnrolled && tradeDailyRemaining === 0 ? (
+                    <p className="mt-2 text-center text-xs text-[#c0392b]">
+                      오늘은 맞교 완료 한도에 도달했습니다. 내일 다시 이용해 주세요.
                     </p>
                   ) : null}
                 </div>
@@ -1261,8 +1424,9 @@ export default function HomePage() {
 
       {showContact ? <ContactModal onClose={() => setShowContact(false)} /> : null}
 
-      {showGuide ? (
+      {showGuide && user ? (
         <GuidePopup
+          userId={user.id}
           onClose={() => setShowGuide(false)}
           onRequestWithdraw={() => setShowWithdrawModal(true)}
           hideWithdraw={accountControlsLocked}
@@ -1299,6 +1463,17 @@ export default function HomePage() {
 
       {reportNoticeCount != null ? (
         <ReportNoticeModal count={reportNoticeCount} onDismiss={dismissReportNotice} />
+      ) : null}
+
+      {showDailyTradeLimitModal ? (
+        <DailyTradeLimitModal
+          completed={tradeDailyCompleted}
+          limit={tradeDailyLimit}
+          onDismiss={() => {
+            dailyLimitNoticeDismissedRef.current = true;
+            setShowDailyTradeLimitModal(false);
+          }}
+        />
       ) : null}
 
       {user && entryGateEnabled && entryGateAblyUrl ? (

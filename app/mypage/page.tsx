@@ -99,7 +99,7 @@ export default function MyPage() {
           onChange={(e) => setText(e.target.value)}
           rows={5}
           className="mt-2 w-full resize-none rounded-xl border border-[#e5e7eb] px-3 py-2.5 text-sm outline-none focus:border-[#ff5a5f]"
-          placeholder="https://...a-bly.com..."
+          placeholder="https://applink.a-bly.com/..."
         />
         {message ? <p className="mt-2 text-sm text-[#1a7a45]">{message}</p> : null}
 

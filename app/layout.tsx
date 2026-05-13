@@ -3,8 +3,8 @@ import "./globals.css";
 import { DevToolsGuard } from "./DevToolsGuard";
 
 export const metadata: Metadata = {
-  title: "에이블리 쇼핑 지원금 교환",
-  description: "에이블리 쇼핑 지원금을 서로 교환해요",
+  title: "에이블리 옷장 맞교",
+  description: "에이블리 옷장 링크를 서로 맞교해요",
 };
 
 export default function RootLayout({

@@ -50,7 +50,7 @@ export async function POST(req: Request) {
         return NextResponse.json(
           {
             error:
-              "에이블리 링크(https://… 로 시작하고 a-bly.com 도메인)만 설정할 수 있습니다.",
+              "https://applink.a-bly.com/ 로 시작하는 에이블리 앱 링크만 설정할 수 있습니다.",
           },
           { status: 400 }
         );

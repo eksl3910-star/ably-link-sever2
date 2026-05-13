@@ -1,5 +1,10 @@
 import { getRequestContext, getOptionalRequestContext } from "@cloudflare/next-on-pages";
-import { DEFAULT_ENTRY_GATE_ABLY_URL, SESSION_TTL_MS, CLAIM_WINDOW_MS } from "@/lib/constants";
+import {
+  DEFAULT_ENTRY_GATE_ABLY_URL,
+  SESSION_TTL_MS,
+  CLAIM_WINDOW_MS,
+  TEMP_DAILY_TRADE_COMPLETED_LIMIT,
+} from "@/lib/constants";
 import { parseAndValidateAblyUrl } from "@/lib/ably-link";
 import { getKstDayStartMs } from "@/lib/kst";
 
@@ -1409,9 +1414,43 @@ export async function clearTradeWaitlistAndQueue(): Promise<void> {
   await db.prepare(`DELETE FROM trade_waitlist`).run();
 }
 
+/** KST 당일 완료된 맞교( transactions.status = completed ) 횟수. 상대와 1:1로 끝낸 횟수로 사용자별 집계. */
+export async function countCompletedTradesInKstDay(
+  userId: string,
+  nowMs: number
+): Promise<number> {
+  const db = getDb();
+  const dayStart = getKstDayStartMs(nowMs);
+  const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM transactions
+       WHERE status = 'completed'
+         AND (user_a_id = ? OR user_b_id = ?)
+         AND (
+           CASE
+             WHEN ifnull(a_clicked_at, 0) >= ifnull(b_clicked_at, 0) THEN ifnull(a_clicked_at, 0)
+             ELSE ifnull(b_clicked_at, 0)
+           END
+         ) >= ?
+         AND (
+           CASE
+             WHEN ifnull(a_clicked_at, 0) >= ifnull(b_clicked_at, 0) THEN ifnull(a_clicked_at, 0)
+             ELSE ifnull(b_clicked_at, 0)
+           END
+         ) < ?`
+    )
+    .bind(userId, userId, dayStart, dayEnd)
+    .first<{ c: unknown }>();
+  return countFromRow(row);
+}
+
 export async function getTradeWaitlistStats(userId: string): Promise<{
   count: number;
   enrolled: boolean;
+  tradeDailyCompleted: number;
+  tradeDailyLimit: number;
+  tradeDailyRemaining: number;
 }> {
   const db = getDb();
   const cnt = await db
@@ -1421,7 +1460,16 @@ export async function getTradeWaitlistStats(userId: string): Promise<{
     .prepare(`SELECT 1 AS x FROM trade_waitlist WHERE user_id = ?`)
     .bind(userId)
     .first<{ x: number }>();
-  return { count: cnt?.c ?? 0, enrolled: row != null };
+  const now = Date.now();
+  const completed = await countCompletedTradesInKstDay(userId, now);
+  const lim = TEMP_DAILY_TRADE_COMPLETED_LIMIT;
+  return {
+    count: cnt?.c ?? 0,
+    enrolled: row != null,
+    tradeDailyCompleted: completed,
+    tradeDailyLimit: lim,
+    tradeDailyRemaining: Math.max(0, lim - completed),
+  };
 }
 
 export async function setTradeWaitlistEnrollment(
@@ -1451,7 +1499,8 @@ export type SeekTradeResult =
         | "NO_USER_LINK"
         | "NO_TX_TABLE"
         | "TRADE_TEMP_BAN"
-        | "PERMANENT_TRADE_BAN";
+        | "PERMANENT_TRADE_BAN"
+        | "DAILY_TRADE_LIMIT";
     };
 
 export async function seekTradePartner(userId: string): Promise<SeekTradeResult> {
@@ -1466,6 +1515,11 @@ export async function seekTradePartner(userId: string): Promise<SeekTradeResult>
       ok: false,
       reason: tradeRule.kind === "permanent" ? "PERMANENT_TRADE_BAN" : "TRADE_TEMP_BAN",
     };
+  }
+
+  const completedToday = await countCompletedTradesInKstDay(userId, now);
+  if (completedToday >= TEMP_DAILY_TRADE_COMPLETED_LIMIT) {
+    return { ok: false, reason: "DAILY_TRADE_LIMIT" };
   }
 
   const onList = await db

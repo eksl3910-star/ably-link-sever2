@@ -109,7 +109,7 @@ export default function AdminPage() {
           entryGateAblyUrl:
             typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()
               ? d.entryGateAblyUrl
-              : "https://applink.a-bly.com/p25459",
+              : "https://applink.a-bly.com/",
           entryGateEnabled: d.entryGateEnabled !== false,
           welcomeAlertMessage: typeof d.welcomeAlertMessage === "string" ? d.welcomeAlertMessage : "",
         });
@@ -117,7 +117,7 @@ export default function AdminPage() {
         if (typeof d.entryGateAblyUrl === "string" && d.entryGateAblyUrl.trim()) {
           setEntryGateInput(d.entryGateAblyUrl);
         } else {
-          setEntryGateInput("https://applink.a-bly.com/p25459");
+          setEntryGateInput("https://applink.a-bly.com/");
         }
         if (typeof d.entryGateEnabled === "boolean") {
           setEntryGateEnabled(d.entryGateEnabled);
@@ -732,8 +732,9 @@ export default function AdminPage() {
         <div className="mt-4 rounded-xl border border-[#e7e9ee] bg-[#fbfbfd] p-4">
           <p className="text-sm font-semibold text-[#1f2430]">메인 진입 게이트</p>
           <p className="mt-1 text-xs text-[#7c8394]">
-            로그인 후 메인에서 사용자가 눌러야 하는 「에이블리 수익성 링크」입니다. HTTPS이며 a-bly.com
-            도메인만 허용됩니다. 아래 사용 안 함으로 두면 팝업이 뜨지 않습니다.
+            로그인 후 메인에서 사용자가 눌러야 하는 「에이블리 수익성 링크」입니다.{" "}
+            <code className="text-[#5c6570]">https://applink.a-bly.com/</code> 로 시작하는 주소만 허용됩니다. 아래
+            사용 안 함으로 두면 팝업이 뜨지 않습니다.
           </p>
           <label className="mt-3 flex cursor-pointer items-center gap-2.5">
             <input

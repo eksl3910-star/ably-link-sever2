@@ -46,13 +46,14 @@ export function DailyLinkModal({ onComplete }: Props) {
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-gray-600">
           매일 자정(KST) 이후 첫 접속 시 프로필 링크를 등록해야 맞교를 시작할 수 있어요.{" "}
-          <span className="font-semibold text-[#ff5a5f]">a-bly.com</span> 도메인만 가능합니다.
+          <span className="font-semibold text-[#ff5a5f]">https://applink.a-bly.com/</span> 로 시작하는 주소만
+          가능합니다.
         </p>
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={4}
-          placeholder="https://...a-bly.com..."
+          placeholder="https://applink.a-bly.com/..."
           className="mt-4 w-full resize-none rounded-xl border border-[#e5e7eb] px-3 py-2.5 text-sm outline-none focus:border-[#ff5a5f]"
         />
         {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
